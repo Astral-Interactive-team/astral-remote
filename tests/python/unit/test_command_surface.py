@@ -7,7 +7,7 @@
 
 import importlib.util
 
-from astral_relay.shared.config import default_runtime_config, validate_config
+from astral_remote.shared.config import default_runtime_config, validate_config
 
 
 def _spec_or_none(name: str):
@@ -20,15 +20,15 @@ def _spec_or_none(name: str):
 
 def test_removed_command_modules_are_not_importable():
     for name in (
-        "astral_relay.agent.commands",
-        "astral_relay.agent.commands.status_cmd",
-        "astral_relay.agent.commands.apps_cmd",
-        "astral_relay.agent.commands.open_cmd",
-        "astral_relay.agent.commands.lock_cmd",
-        "astral_relay.agent.security",
-        "astral_relay.agent.security.authorize",
-        "astral_relay.agent.windows.apps",
-        "astral_relay.agent.windows.lock",
+        "astral_remote.agent.commands",
+        "astral_remote.agent.commands.status_cmd",
+        "astral_remote.agent.commands.apps_cmd",
+        "astral_remote.agent.commands.open_cmd",
+        "astral_remote.agent.commands.lock_cmd",
+        "astral_remote.agent.security",
+        "astral_remote.agent.security.authorize",
+        "astral_remote.agent.windows.apps",
+        "astral_remote.agent.windows.lock",
     ):
         assert _spec_or_none(name) is None, name
 
@@ -36,7 +36,7 @@ def test_removed_command_modules_are_not_importable():
 def test_bot_registers_no_prefix_command_machinery():
     from pathlib import Path
 
-    from astral_relay.agent import discord_bot
+    from astral_remote.agent import discord_bot
 
     text = Path(discord_bot.__file__).read_text(encoding="utf-8")
     for forbidden in ("command_prefix", "process_commands", "add_command", "on_command_error"):

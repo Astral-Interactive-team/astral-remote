@@ -4,10 +4,10 @@ import sys
 
 import pytest
 
-from astral_relay.agent.payload import PAYLOAD_VERSION, is_plausible_bot_token
-from astral_relay.builder.payload_codegen import render_payload_module
-from astral_relay.shared.config import default_runtime_config
-from astral_relay.shared.errors import BuildError
+from astral_remote.agent.payload import PAYLOAD_VERSION, is_plausible_bot_token
+from astral_remote.builder.payload_codegen import render_payload_module
+from astral_remote.shared.config import default_runtime_config
+from astral_remote.shared.errors import BuildError
 
 TOKEN_A = "QUJDREVGR0hJSktMTU5PUFFS.VEVTVC1BLVRPS0VO.MTIzNDU2Nzg5MEFCQ0RFRkdI"
 
@@ -29,7 +29,7 @@ def test_codegen_roundtrip():
     exec(compile(source, "_embedded_payload", "exec"), namespace)
     assert namespace["PAYLOAD_V"] == PAYLOAD_VERSION
     assert namespace["TOKEN"] == TOKEN_A
-    assert namespace["CONFIG"]["startupName"] == "AstralRelay"
+    assert namespace["CONFIG"]["startupName"] == "AstralRemote"
 
 
 def test_codegen_rejects_bad_token_and_config():
@@ -42,16 +42,16 @@ def test_codegen_rejects_bad_token_and_config():
 
 
 def test_load_missing_payload_raises(tmp_path, monkeypatch):
-    from astral_relay.agent import payload as payload_mod
+    from astral_remote.agent import payload as payload_mod
 
-    monkeypatch.setitem(sys.modules, "astral_relay._embedded_payload", None)
+    monkeypatch.setitem(sys.modules, "astral_remote._embedded_payload", None)
     # Force ImportError by blocking the import machinery for this name.
     import builtins
 
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
-        if name == "astral_relay._embedded_payload" or name.endswith("._embedded_payload"):
+        if name == "astral_remote._embedded_payload" or name.endswith("._embedded_payload"):
             raise ImportError("blocked")
         return real_import(name, *args, **kwargs)
 

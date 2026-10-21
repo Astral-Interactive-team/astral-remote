@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from astral_relay.builder.build import (  # noqa: E402
+from astral_remote.builder.build import (  # noqa: E402
     build_agent,
     prompt_autostart,
     prompt_exe_name,
@@ -27,7 +27,7 @@ def main() -> int:
     except KeyboardInterrupt:
         return 0
     except Exception as exc:  # noqa: BLE001 - build errors are user-safe by construction
-        from astral_relay.agent.secure_input import InterruptedError as TokenCancelled
+        from astral_remote.agent.secure_input import InterruptedError as TokenCancelled
 
         if isinstance(exc, TokenCancelled):
             print("Cancelled.")

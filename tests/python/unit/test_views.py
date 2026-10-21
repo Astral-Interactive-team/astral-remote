@@ -4,9 +4,9 @@
 
 from rich.console import Console
 
-from astral_relay.cli import views
-from astral_relay.cli.links import SOCIAL_LINKS
-from astral_relay.cli.theme import DARK_PURPLE, PURPLE, style_text, supports_color
+from astral_remote.cli import views
+from astral_remote.cli.links import SOCIAL_LINKS
+from astral_remote.cli.theme import DARK_PURPLE, PURPLE, style_text, supports_color
 
 LEFT_CELL = " │   ├── [01] GitHub"
 RIGHT_CELL = "│  [02] Telegram"
@@ -17,7 +17,7 @@ EXPECTED_HOME = [
     LEFT_CELL + " " * (77 - len(LEFT_CELL)) + RIGHT_CELL,
     " │   └── [03] Discord",
     " │",
-    " ├── [N] next ──> RELAY",
+    " ├── [N] next ──> REMOTE",
     " │",
     " └── [Q] quit",
     "",
@@ -31,16 +31,16 @@ EXPECTED_HOME_NARROW = [
     " │   ├── [02] Telegram",
     " │   └── [03] Discord",
     " │",
-    " ├── [N] next ──> RELAY",
+    " ├── [N] next ──> REMOTE",
     " │",
     " └── [Q] quit",
     "",
 ]
 
-EXPECTED_RELAY = [
-    " ┌── RELAY · 2/2",
+EXPECTED_REMOTE = [
+    " ┌── REMOTE · 2/2",
     " │",
-    " ├── ASTRAL RELAY",
+    " ├── ASTRAL REMOTE",
     " │   ├── [01] Generate Agent EXE",
     " │   └── [02] Start Agent",
     " │",
@@ -70,32 +70,32 @@ def test_home_narrow_layout_stacked():
 def test_home_names_only_urls_stay_in_config():
     wide = views.home_block(False).plain
     assert "https://" not in wide
-    assert SOCIAL_LINKS["github"].endswith("/astral-relay")
+    assert SOCIAL_LINKS["github"].endswith("/astral-remote")
     assert SOCIAL_LINKS["telegram"] == "https://t.me/astral_int"
     assert SOCIAL_LINKS["discord"] == "https://discord.gg/bSvcQG8K4f"
 
 
-def test_relay_layout_exact():
-    assert views.relay_block(False).plain.split("\n") == EXPECTED_RELAY
+def test_remote_layout_exact():
+    assert views.remote_block(False).plain.split("\n") == EXPECTED_REMOTE
 
 
 def test_no_panel_borders():
-    for block in (views.home_block(False), views.relay_block(False),
-                  views.home_block(True), views.relay_block(True)):
+    for block in (views.home_block(False), views.remote_block(False),
+                  views.home_block(True), views.remote_block(True)):
         assert "╭" not in block.plain and "╰" not in block.plain
         assert "╮" not in block.plain and "╯" not in block.plain
 
 
 def test_prompt_exact_path():
     line1, line2 = views.kali_prompt_text(False)
-    assert line1.plain == "┌─[astral@relay]──[~/home]"
+    assert line1.plain == "┌─[astral@remote]──[~/home]"
     assert line2.plain == "└── >> "
     assert "Astral_int" not in line1.plain
 
 
 def test_prompt_colored_contains_same_text():
     line1, line2 = views.kali_prompt_text(True)
-    assert line1.plain == "┌─[astral@relay]──[~/home]"
+    assert line1.plain == "┌─[astral@remote]──[~/home]"
     assert line2.plain == "└── >> "
 
 
@@ -184,5 +184,5 @@ def test_prompt_spans():
     line1, line2 = views.kali_prompt_text(True)
     styles = {str(style) for _, _, style in _spans(line1)}
     assert PURPLE in styles and DARK_PURPLE in styles
-    assert line1.plain == "┌─[astral@relay]──[~/home]"
+    assert line1.plain == "┌─[astral@remote]──[~/home]"
     assert line2.plain == "└── >> "

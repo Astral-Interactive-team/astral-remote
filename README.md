@@ -1,19 +1,19 @@
-# ASTRAL RELAY v0.1.0
+# ASTRAL REMOTE v0.1.0
 
 <p align="center">
-  <a href="https://github.com/Astral-Interactive-team/astral-relay/archive/refs/heads/main.zip">
-    <img src="https://img.shields.io/badge/Download-Astral--Relay-8B5CF6?style=for-the-badge&logo=github&logoColor=white" alt="Download Astral Relay">
+  <a href="https://github.com/Astral-Interactive-team/astral-remote/archive/refs/heads/main.zip">
+    <img src="https://img.shields.io/badge/Download-Astral--Remote-8B5CF6?style=for-the-badge&logo=github&logoColor=white" alt="Download Astral Remote">
   </a>
-  <a href="https://github.com/Astral-Interactive-team/astral-relay/stargazers">
-    <img src="https://img.shields.io/github/stars/Astral-Interactive-team/astral-relay?color=8B5CF6&style=for-the-badge&label=%E2%98%85_Stars" alt="Star Astral Relay">
+  <a href="https://github.com/Astral-Interactive-team/astral-remote/stargazers">
+    <img src="https://img.shields.io/github/stars/Astral-Interactive-team/astral-remote?color=8B5CF6&style=for-the-badge&label=%E2%98%85_Stars" alt="Star Astral Remote">
   </a>
-  <a href="https://github.com/Astral-Interactive-team/astral-relay">
-    <img src="https://img.shields.io/badge/Repo-astral--relay-181717?style=for-the-badge&logo=github&logoColor=white" alt="Official Repository">
+  <a href="https://github.com/Astral-Interactive-team/astral-remote">
+    <img src="https://img.shields.io/badge/Repo-astral--remote-181717?style=for-the-badge&logo=github&logoColor=white" alt="Official Repository">
   </a>
 </p>
 
 <p align="center">
-  <b>A Discord-controlled Windows remote management agent.</b>
+  <b>A Windows system inventory agent that publishes a read-only dashboard to Discord.</b>
   <br>
   Developed by <b>Astral Interactive</b>.
 </p>
@@ -27,24 +27,24 @@
 
 ## Overview
 
-**Astral Relay** is a Python-based CLI application that builds a standalone Windows executable and connects it directly to Discord.
+**Astral Remote** is a Python-based CLI application that builds a standalone Windows executable and connects it directly to Discord.
 
 It combines a custom Rich terminal interface, Windows Agent packaging, and a read-only Discord system-information dashboard.
 
-No separate Astral Relay backend server is required.
+No separate Astral Remote backend server is required.
 
 ## Features
 
 ### Terminal Interface
 
-Astral Relay provides a custom terminal interface with Astral Interactive branding.
+Astral Remote provides a custom terminal interface with Astral Interactive branding.
 
 | Page | Features |
 |:--|:--|
 | HOME | GitHub, Telegram, Discord |
-| RELAY | Generate Agent EXE, Start Agent |
+| REMOTE | Generate Agent EXE, Start Agent |
 
-The startup banner is stored in `astral_relay/cli/banner.txt`. The development CLI and production Agent use separate entry points.
+The startup banner is stored in `astral_remote/cli/banner.txt`. The development CLI and production Agent use separate entry points.
 
 ### Discord Agent
 
@@ -58,11 +58,11 @@ The Overview is a dashboard rather than a duplicate of the detail messages: it c
 
 The report deliberately contains **no process inventory, no service inventory, and no installed-software inventory**. It never lists running programs, process IDs, per-process CPU or memory, Windows services, installed applications, or the default browser.
 
-There are no select menus, no pagination buttons, and no user-input controls. Every message opens with its title and position, `# Astral Relay — System Information (Part N of M)`, followed by its topic heading `## <topic>`. A topic that spans several messages simply repeats its heading; no continuation marker is ever printed, because the part number already carries the order. Nothing is summarized away or omitted, and facts the Agent cannot read are reported as `Unavailable` (or `Not supported` for features the platform does not expose) instead of being guessed. See [System Report](#system-report) for what is and is not collected.
+There are no select menus, no pagination buttons, and no user-input controls. Every message opens with its title and position, `# Astral Remote — System Information (Part N of M)`, followed by its topic heading `## <topic>`. A topic that spans several messages simply repeats its heading; no continuation marker is ever printed, because the part number already carries the order. Nothing is summarized away or omitted, and facts the Agent cannot read are reported as `Unavailable` (or `Not supported` for features the platform does not expose) instead of being guessed. See [System Report](#system-report) for what is and is not collected.
 
 ### Executable Builder
 
-Astral Relay packages its Agent using PyInstaller.
+Astral Remote packages its Agent using PyInstaller.
 
 The build pipeline validates the configuration, prepares an isolated staging directory, packages the application, verifies the executable, and publishes the result only after validation succeeds.
 
@@ -70,7 +70,7 @@ Generated executable:
 
 ```text
 dist/
-└── astral-relay.exe
+└── astral-remote.exe
 ```
 
 If the build fails verification, the previous executable is preserved.
@@ -92,8 +92,8 @@ A Discord application and bot account are required for live Discord testing.
 ### 1. Clone the repository
 
 ```powershell
-git clone https://github.com/Astral-Interactive-team/astral-relay.git
-cd astral-relay
+git clone https://github.com/Astral-Interactive-team/astral-remote.git
+cd astral-remote
 ```
 
 Alternatively, download and extract the source ZIP from the download link above.
@@ -113,16 +113,16 @@ A virtual environment is recommended but not required.
 python -m pip install -r requirements.txt
 ```
 
-The `astral_relay` package lives at the repository root, so `python -m astral_relay` runs directly with any Python 3.14 interpreter that has these dependencies, without installing the package. To also run it from other directories, install it editable:
+The `astral_remote` package lives at the repository root, so `python -m astral_remote` runs directly with any Python 3.14 interpreter that has these dependencies, without installing the package. To also run it from other directories, install it editable:
 
 ```powershell
 python -m pip install --no-deps -e .
 ```
 
-### 4. Launch Astral Relay
+### 4. Launch Astral Remote
 
 ```powershell
-python -m astral_relay
+python -m astral_remote
 ```
 
 Run the command from the repository root. No package installation, global installation, or PATH modification is required.
@@ -132,7 +132,7 @@ Run the command from the repository root. No package installation, global instal
 Launch the interactive CLI:
 
 ```powershell
-python -m astral_relay
+python -m astral_remote
 ```
 
 Available menu actions:
@@ -141,7 +141,7 @@ Available menu actions:
 |:--|:--|
 | `01` | Generate Agent EXE |
 | `02` | Start Agent |
-| `N` | Open the RELAY page |
+| `N` | Open the REMOTE page |
 | `B` | Return to HOME |
 | `Q` | Exit |
 
@@ -150,16 +150,18 @@ Generating an Agent (option `01`, or `python scripts/build_exe.py`) prompts for:
 | Prompt | Default | Effect |
 |:--|:--|:--|
 | Discord Bot Token | required | Embedded in the EXE as recoverable data. |
-| Output EXE name | `astral-relay.exe` | Published under `dist/`. |
-| Copy Agent into `%APPDATA%` | Yes | The EXE copies itself to `%APPDATA%\<name>\AstralRelay-Agent.exe` on launch so deleting the original keeps autostart working. |
+| Output EXE name | `astral-remote.exe` | Published under `dist/`. |
+| Copy Agent into `%APPDATA%` | Yes | The EXE copies itself to `%APPDATA%\<name>\AstralRemote-Agent.exe` on launch so deleting the original keeps autostart working. |
 | Register Windows autostart | Yes | The EXE registers `HKCU Run` and a logon task on launch. |
 
-`<name>` is the output EXE name without its extension (for example `astral-relay`, or `MyAgent` for `MyAgent.exe`); the same name is used for the `%APPDATA%` folder, the `HKCU Run` value, and the logon task. Both install choices are embedded in the EXE at build time and are not asked on the target PC.
+`<name>` is the output EXE name without its extension (for example `astral-remote`, or `MyAgent` for `MyAgent.exe`); the same name is used for the `%APPDATA%` folder, the `HKCU Run` value, and the logon task. Both install choices are embedded in the EXE at build time and are not asked on the target PC.
+
+**Upgrading from a pre-rename build:** the Agent now installs itself as `%APPDATA%\AstralRemote\AstralRemote-Agent.exe` and registers the `AstralRemote` autostart entry. The old `AstralRelay` backup copy and its `HKCU Run` value and logon task are not removed automatically; delete them once so only one Agent runs. The existing `%LOCALAPPDATA%\AstralRelay\identity.json` is adopted automatically on first start (see below).
 
 Display the version:
 
 ```powershell
-python -m astral_relay --version
+python -m astral_remote --version
 ```
 
 To invoke the standalone build script directly:
@@ -183,7 +185,7 @@ The final output is:
 
 ```text
 dist/
-└── astral-relay.exe
+└── astral-remote.exe
 ```
 
 The builder publishes the new executable only after verification succeeds and preserves the previous output when a build fails.
@@ -215,7 +217,7 @@ The Agent no longer ships a removal script. Remove old registrations manually fr
 
 Each Agent installation manages exactly one category per guild.
 
-- A random, non-secret **installation ID** is generated once and stored at `%LOCALAPPDATA%\AstralRelay\identity.json`, beside the sanitized error log.
+- A random, non-secret **installation ID** is generated once and stored at `%LOCALAPPDATA%\AstralRemote\identity.json`, beside the sanitized error log. An existing `%LOCALAPPDATA%\AstralRelay\identity.json` from a pre-rename build is copied into the new directory on first start, so the installation ID, managed category, and report message IDs are kept instead of creating a duplicate category.
 - The category is named `<hostname> [<installation-id>]` and matched by that installation ID, so restarts, reconnects, and repeated `on_ready` events reuse the same category instead of creating more. The created category ID is remembered in the same file.
 - Missing `Manage Channels` permission or Discord API failures warn once and are not retried in a loop.
 - Categories left by older builds (`pc <hostname> (<host-id>)`) are adopted when unambiguous. Ambiguous or duplicate categories are reported to the file log and never deleted automatically.
@@ -223,7 +225,7 @@ Each Agent installation manages exactly one category per guild.
 Channels are added to the managed category one at a time, starting with `#info`:
 
 - The bot creates a single `#info` text channel inside the category and publishes this computer's full system report there using Discord **Components V2** (no embeds, no select menus, no pagination). The channel ID and the ordered report message IDs are remembered in `identity.json`, so later starts refresh the same messages instead of posting duplicates.
-- The report follows the fixed topic order above, starting with the Overview. Each message opens with `# Astral Relay — System Information (Part N of M)` and its topic heading `## <topic>`, so the order stays readable even when a topic spans several messages.
+- The report follows the fixed topic order above, starting with the Overview. Each message opens with `# Astral Remote — System Information (Part N of M)` and its topic heading `## <topic>`, so the order stays readable even when a topic spans several messages.
 - Long lists are never summarized or truncated: every collected item is listed in full, and a list is split only at a section or item boundary, never mid-item.
 - Process, service, and installed-software inventories are not collected or shown at all.
 - Values the Agent genuinely cannot read are shown as `Unavailable`, and features the platform does not expose are shown as `Not supported`. No placeholder numbers are invented.
@@ -234,8 +236,8 @@ Channels are added to the managed category one at a time, starting with `#info`:
 
 The report is produced by two modules:
 
-- `astral_relay/agent/windows/inventory.py` collects the facts with read-only registry reads, ctypes calls, and a single base64-encoded PowerShell CIM pass. Each probe is guarded, so a partial failure only marks its own fields `Unavailable`.
-- `astral_relay/agent/info_report.py` renders, splits, and publishes the Components V2 messages.
+- `astral_remote/agent/windows/inventory.py` collects the facts with read-only registry reads, ctypes calls, and a single base64-encoded PowerShell CIM pass. Each probe is guarded, so a partial failure only marks its own fields `Unavailable`.
+- `astral_remote/agent/info_report.py` renders, splits, and publishes the Components V2 messages.
 
 Collected sections, in publication order:
 
@@ -252,7 +254,7 @@ The layout uses only the three heading levels Discord renders: `#` for the messa
 
 Duplicate facts are kept in exactly one place: the Windows and system directories are reported once in the Windows & Operating System topic, the Secure Boot, TPM, and BitLocker details live in the firmware and storage topics with only a combined summary line under Security & Updates, and the Overview shows only the values whose full detail appears in a later topic.
 
-Utilization that runs high is marked in words and in the message accent colour together, never by colour alone: at 80% or above a value is suffixed `- High`, and at 90% or above `- Critical`, which also switches the message's container accent to amber or red. The default accent colour is the Astral Relay purple.
+Utilization that runs high is marked in words and in the message accent colour together, never by colour alone: at 80% or above a value is suffixed `- High`, and at 90% or above `- Critical`, which also switches the message's container accent to amber or red. The default accent colour is the Astral Remote purple.
 
 The report collects **no process inventory, no service inventory, and no installed-software inventory**. Running programs, process IDs, per-process CPU or memory, Windows services, installed applications, Start Menu entry counts, and the default browser are neither read nor rendered.
 
@@ -337,13 +339,13 @@ Tests using mocks or test credentials do not prove that live Discord authenticat
 | System report collection | Automated tests available |
 | Live Discord integration | Pending verification |
 
-Astral Relay remains experimental until live Discord integration and target-Windows operations have been verified.
+Astral Remote remains experimental until live Discord integration and target-Windows operations have been verified.
 
 ## Project Structure
 
 ```text
-astral-relay/
-├── astral_relay/
+astral-remote/
+├── astral_remote/
 │   ├── cli/
 │   │   └── banner.txt
 │   ├── shared/

@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-import astral_relay.builder.build as build_mod
-from astral_relay.builder.build import archive_stale_output, resolve_build_token
-from astral_relay.shared.errors import BuildError
+import astral_remote.builder.build as build_mod
+from astral_remote.builder.build import archive_stale_output, resolve_build_token
+from astral_remote.shared.errors import BuildError
 from tests.python.unit.test_payload import TOKEN_A
 
 
@@ -31,7 +31,7 @@ class _FakePipe:
 
 
 def test_sanitize_exe_name():
-    from astral_relay.builder.build import DEFAULT_EXE_NAME, sanitize_exe_name
+    from astral_remote.builder.build import DEFAULT_EXE_NAME, sanitize_exe_name
 
     assert sanitize_exe_name("") == DEFAULT_EXE_NAME
     assert sanitize_exe_name(None) == DEFAULT_EXE_NAME
@@ -47,7 +47,7 @@ def test_prompt_exe_name_default_and_invalid(monkeypatch, capsys):
     import io
     import sys as sys_mod
 
-    from astral_relay.builder import build as build_mod
+    from astral_remote.builder import build as build_mod
 
     class Answer(io.StringIO):
         def isatty(self):
@@ -66,7 +66,7 @@ def test_prompt_exe_name_is_themed_on_tty(monkeypatch):
     import io
     import sys as sys_mod
 
-    from astral_relay.builder import build as build_mod
+    from astral_remote.builder import build as build_mod
 
     class Tty(io.StringIO):
         def isatty(self):
@@ -119,13 +119,13 @@ def test_prompt_bool_empty_keeps_false_default(monkeypatch):
 
 
 def test_staging_copy_excludes_real_tree(tmp_path, monkeypatch):
-    monkeypatch.setattr(build_mod, "SRC_PACKAGE", Path("astral_relay"))
+    monkeypatch.setattr(build_mod, "SRC_PACKAGE", Path("astral_remote"))
     monkeypatch.setattr(build_mod, "BUILD_TMP", tmp_path)
     stage = build_mod._stage_package()
     try:
         assert (stage / "pkg" / "run_agent.py").is_file()
-        assert not (stage / "pkg" / "astral_relay" / "_embedded_payload.py").exists()
-        assert Path("astral_relay/_embedded_payload.py").exists() is False
+        assert not (stage / "pkg" / "astral_remote" / "_embedded_payload.py").exists()
+        assert Path("astral_remote/_embedded_payload.py").exists() is False
     finally:
         build_mod._cleanup_tracked()
 
@@ -159,12 +159,12 @@ def test_archive_stale_output(tmp_path):
 
 def test_build_aborts_fast_on_bad_token_and_keeps_output(tmp_path, monkeypatch):
     monkeypatch.setattr(build_mod, "DIST_DIR", tmp_path)
-    monkeypatch.setattr(build_mod, "OUTPUT_EXE", tmp_path / "AstralRelay-Agent.exe")
+    monkeypatch.setattr(build_mod, "OUTPUT_EXE", tmp_path / "AstralRemote-Agent.exe")
     monkeypatch.setattr(build_mod, "BUILD_TMP", tmp_path / "build-tmp")
     before = None
     with pytest.raises(BuildError):
         build_mod.build_agent(token="junk")
-    assert (tmp_path / "AstralRelay-Agent.exe").exists() is False
+    assert (tmp_path / "AstralRemote-Agent.exe").exists() is False
 
 
 def test_signal_handler_kills_child_and_raises():
@@ -190,7 +190,7 @@ def test_generate_cancel_returns_to_menu(monkeypatch):
 
     from rich.console import Console
 
-    import astral_relay.cli.menu as menu_mod
+    import astral_remote.cli.menu as menu_mod
 
     def cancelled(**kwargs):
         raise KeyboardInterrupt()
@@ -206,9 +206,9 @@ def test_generate_cancel_returns_to_menu(monkeypatch):
 def test_start_interrupt_returns_to_menu(monkeypatch):
     import sys
 
-    import astral_relay.agent.app as app_mod
-    import astral_relay.agent.secure_input as secure_mod
-    import astral_relay.cli.menu as menu_mod
+    import astral_remote.agent.app as app_mod
+    import astral_remote.agent.secure_input as secure_mod
+    import astral_remote.cli.menu as menu_mod
     from rich.console import Console
 
     monkeypatch.setattr(secure_mod, "prompt_for_token", lambda: TOKEN_A)

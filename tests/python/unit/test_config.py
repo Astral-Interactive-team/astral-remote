@@ -1,11 +1,11 @@
 # Unit tests for configuration schema and validation.
 
-from astral_relay.shared.config import (
+from astral_remote.shared.config import (
     default_runtime_config,
     require_valid_config,
     validate_config,
 )
-from astral_relay.shared.errors import ConfigError
+from astral_remote.shared.errors import ConfigError
 import pytest
 
 
@@ -31,7 +31,7 @@ def test_rejects_non_boolean_self_install_flags():
 
 
 def test_runtime_config_carries_startup_name():
-    assert default_runtime_config()["startupName"] == "AstralRelay"
+    assert default_runtime_config()["startupName"] == "AstralRemote"
     assert default_runtime_config(startup_name="MyAgent")["startupName"] == "MyAgent"
     blank = dict(default_runtime_config())
     blank["startupName"] = "  "
@@ -45,7 +45,7 @@ def test_runtime_config_has_no_command_or_permission_keys():
 
 
 def test_accepts_good_config():
-    assert validate_config({"agentVersion": "0.1.0", "startupName": "AstralRelay"}) == []
+    assert validate_config({"agentVersion": "0.1.0", "startupName": "AstralRemote"}) == []
 
 
 def test_rejects_empty_version():

@@ -9,8 +9,8 @@
 import asyncio
 from types import SimpleNamespace
 
-import astral_relay.agent.discord_setup as setup
-from astral_relay.agent.discord_setup import (
+import astral_remote.agent.discord_setup as setup
+from astral_remote.agent.discord_setup import (
     INFO_CHANNEL_NAME,
     CategoryManager,
     ensure_host_categories,
@@ -196,7 +196,7 @@ def test_first_startup_creates_one_category(tmp_path):
 
 def expected_parts(agent, full=False):
     """How many report messages one stubbed inventory should produce."""
-    from astral_relay.agent.info_report import build_report
+    from astral_remote.agent.info_report import build_report
 
     _, pages = build_report(stub_collector(full)(agent))
     return len(pages)
@@ -211,7 +211,7 @@ def test_first_startup_creates_info_channel_with_system_report(tmp_path):
     channel = category.channels[0]
     assert len(channel.sent) == expected_parts(agent)
     headline = view_text(channel.sent[0])
-    assert "Astral Relay" in headline and "System Information" in headline
+    assert "Astral Remote" in headline and "System Information" in headline
     assert "ONLINE" in headline
     assert "**Agent version:** 9.9.9" in headline
     assert "## Overview" in headline
@@ -263,7 +263,7 @@ def test_report_is_split_and_rejoined_in_order(tmp_path):
     combined = "\n".join(view_text(view) for view in channel.sent)
     # A topic that spans several messages repeats its heading on each one, and
     # is never marked as a continuation.
-    from astral_relay.agent.info_report import build_report
+    from astral_remote.agent.info_report import build_report
 
     _, pages = build_report(stub_collector(full=True)(agent))
     network_pages = sum(1 for page in pages if page[0].group == "Network & Power")
@@ -477,7 +477,7 @@ def test_ambiguous_legacy_categories_not_created(tmp_path, monkeypatch):
 
 
 def test_report_writes_to_console_and_file(monkeypatch):
-    from astral_relay.agent import error_log
+    from astral_remote.agent import error_log
 
     console = []
     files = []

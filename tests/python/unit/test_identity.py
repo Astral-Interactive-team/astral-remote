@@ -4,14 +4,61 @@
 
 import json
 
-from astral_relay.agent import identity
-from astral_relay.agent.identity import StateStore, load_state, save_state, state_file
+from astral_remote.agent import identity
+from astral_remote.agent.identity import StateStore, load_state, save_state, state_file
 
 
 def test_state_file_uses_state_dir(tmp_path):
     env = {"LOCALAPPDATA": str(tmp_path)}
-    assert state_file(env) == tmp_path / "AstralRelay" / identity.STATE_FILENAME
+    assert state_file(env) == tmp_path / "AstralRemote" / identity.STATE_FILENAME
     assert state_file({}) is None
+
+
+def test_legacy_state_is_adopted_into_the_new_directory(tmp_path):
+    legacy_directory = tmp_path / "AstralRelay"
+    legacy_directory.mkdir()
+    legacy = legacy_directory / identity.STATE_FILENAME
+    legacy.write_text(json.dumps({
+        "version": 1,
+        "installationId": "legacy-id",
+        "guilds": {"1": {"categoryId": 11, "name": "HOST", "infoChannelId": 5,
+                         "infoMessages": [7, 8]}},
+    }), encoding="utf-8")
+
+    env = {"LOCALAPPDATA": str(tmp_path)}
+    state = load_state(env=env)
+    assert state["installationId"] == "legacy-id"
+    assert state["guilds"]["1"]["infoMessages"] == [7, 8]
+    # The pre-rename file is copied forward and left in place.
+    adopted = tmp_path / "AstralRemote" / identity.STATE_FILENAME
+    assert adopted.is_file()
+    assert legacy.is_file()
+    assert load_state(env=env)["guilds"]["1"]["categoryId"] == 11
+
+
+def test_existing_new_state_is_not_overwritten_by_the_legacy_file(tmp_path):
+    legacy_directory = tmp_path / "AstralRelay"
+    legacy_directory.mkdir()
+    (legacy_directory / identity.STATE_FILENAME).write_text(
+        json.dumps({"installationId": "legacy-id"}), encoding="utf-8")
+    new_directory = tmp_path / "AstralRemote"
+    new_directory.mkdir()
+    (new_directory / identity.STATE_FILENAME).write_text(
+        json.dumps({"installationId": "new-id"}), encoding="utf-8")
+
+    state = load_state(env={"LOCALAPPDATA": str(tmp_path)})
+    assert state["installationId"] == "new-id"
+
+
+def test_explicit_state_path_never_adopts_the_legacy_file(tmp_path):
+    legacy_directory = tmp_path / "AstralRelay"
+    legacy_directory.mkdir()
+    (legacy_directory / identity.STATE_FILENAME).write_text(
+        json.dumps({"installationId": "legacy-id"}), encoding="utf-8")
+
+    explicit = tmp_path / "explicit.json"
+    assert load_state(explicit, env={"LOCALAPPDATA": str(tmp_path)})["installationId"] == ""
+    assert not (tmp_path / "AstralRemote").exists()
 
 
 def test_installation_id_generated_and_persisted(tmp_path):

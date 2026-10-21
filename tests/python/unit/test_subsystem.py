@@ -5,7 +5,7 @@ import struct
 
 import pytest
 
-from astral_relay.builder.subsystem import (
+from astral_remote.builder.subsystem import (
     IMAGE_SUBSYSTEM_WINDOWS_CUI,
     IMAGE_SUBSYSTEM_WINDOWS_GUI,
     read_subsystem,

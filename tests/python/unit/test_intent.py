@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("discord")
 
-from astral_relay.agent.connection import is_fatal_auth_error, login_with_backoff
+from astral_remote.agent.connection import is_fatal_auth_error, login_with_backoff
 
 
 class PrivilegedIntentsRequired(Exception):
@@ -40,7 +40,7 @@ def test_login_failure_401_is_fatal():
 
 
 def test_intent_diagnostic_text_is_actionable_and_secret_free():
-    from astral_relay.agent import discord_bot as bot_mod
+    from astral_remote.agent import discord_bot as bot_mod
     import inspect
 
     source = inspect.getsource(bot_mod.on_ready if hasattr(bot_mod, "on_ready") else bot_mod.build_bot)

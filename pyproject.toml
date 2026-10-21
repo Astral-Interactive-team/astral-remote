@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "astral-relay"
+name = "astral-remote"
 version = "0.1.0"
-description = "Discord-controlled Windows remote management agent (Python port)."
+description = "Windows system inventory agent that publishes a read-only report to Discord."
 requires-python = "==3.14.*"
 dependencies = [
   "rich==15.0.0",
@@ -20,12 +20,12 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["astral_relay*"]
+include = ["astral_remote*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
 pythonpath = ["."]
 
-[tool.astral_relay]
+[tool.astral_remote]
 agent_version = "0.1.0"
 python_target = "3.14"

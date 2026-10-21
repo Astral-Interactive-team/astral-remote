@@ -2,7 +2,7 @@
 # The full #info dashboard lives in info_report.py and has its own test
 # module.
 
-from astral_relay.agent.windows.info import (
+from astral_remote.agent.windows.info import (
     get_hostname,
     get_local_ip,
     get_machine_id,

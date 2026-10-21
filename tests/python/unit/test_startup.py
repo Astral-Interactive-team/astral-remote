@@ -4,7 +4,7 @@
 import sys
 from pathlib import Path
 
-from astral_relay.agent.startup import DEFAULT_STARTUP_NAME, RUN_KEY, ensure_autorun
+from astral_remote.agent.startup import DEFAULT_STARTUP_NAME, RUN_KEY, ensure_autorun
 
 
 class FakeWinreg:
@@ -63,18 +63,18 @@ def test_added_current_updated(monkeypatch):
 
 
 def test_terminate_holders_contract():
-    from astral_relay.agent.startup import terminate_holders
+    from astral_remote.agent.startup import terminate_holders
 
     assert terminate_holders("definitely-not-here-xyz.exe") == 0
     assert isinstance(terminate_holders(""), int)
 
 
 def test_publish_kills_holders_then_succeeds(tmp_path, monkeypatch):
-    import astral_relay.builder.build as build_mod
+    import astral_remote.builder.build as build_mod
 
     calls = []
     monkeypatch.setattr(
-        "astral_relay.agent.startup.terminate_holders",
+        "astral_remote.agent.startup.terminate_holders",
         lambda path: calls.append(path) or 1,
     )
     real_sleep = build_mod.time.sleep
@@ -114,7 +114,7 @@ def test_failed_without_raise(monkeypatch):
 def test_backup_install_current_repair(tmp_path, monkeypatch):
     import sys as sys_mod
 
-    from astral_relay.agent.startup import backup_paths, ensure_backup_copy
+    from astral_remote.agent.startup import backup_paths, ensure_backup_copy
 
     monkeypatch.setattr(sys_mod, "frozen", True, raising=False)
     src = tmp_path / "src.exe"
@@ -136,14 +136,14 @@ def test_backup_install_current_repair(tmp_path, monkeypatch):
 def test_backup_skipped_when_not_frozen(monkeypatch):
     import sys as sys_mod
 
-    from astral_relay.agent.startup import ensure_backup_copy
+    from astral_remote.agent.startup import ensure_backup_copy
 
     monkeypatch.delattr(sys_mod, "frozen", raising=False)
     assert ensure_backup_copy() == ("skipped", None)
 
 
 def test_self_install_honors_build_flags(monkeypatch):
-    import astral_relay.agent.startup as startup
+    import astral_remote.agent.startup as startup
 
     calls = []
 
@@ -191,7 +191,7 @@ def test_self_install_honors_build_flags(monkeypatch):
 
 
 def test_self_install_skips_registry_when_not_frozen(monkeypatch):
-    import astral_relay.agent.startup as startup
+    import astral_remote.agent.startup as startup
 
     calls = []
     monkeypatch.setattr(startup, "ensure_backup_copy", lambda exe_path=None, startup_name=None: ("skipped", None))
@@ -208,12 +208,12 @@ def test_self_install_skips_registry_when_not_frozen(monkeypatch):
 def test_startup_name_drives_folder_and_registry(tmp_path, monkeypatch):
     import sys as sys_mod
 
-    from astral_relay.agent.startup import backup_paths, ensure_autorun
+    from astral_remote.agent.startup import backup_paths, ensure_autorun
 
     monkeypatch.setenv("APPDATA", str(tmp_path / "roam"))
     directory, dst = backup_paths(startup_name="MyAgent")
     assert directory.name == "MyAgent"
-    assert dst.name == "AstralRelay-Agent.exe"
+    assert dst.name == "AstralRemote-Agent.exe"
 
     monkeypatch.setattr(sys_mod, "frozen", True, raising=False)
     fake = FakeWinreg()
@@ -227,10 +227,10 @@ def test_read_registration_reports_state_read_only(tmp_path, monkeypatch):
     import subprocess as subprocess_mod
     import sys as sys_mod
 
-    from astral_relay.agent.startup import read_registration
+    from astral_remote.agent.startup import read_registration
 
     env = {"APPDATA": str(tmp_path / "roam")}
-    fake = FakeWinreg({"astral-relay": '"C:\\app.exe"'})
+    fake = FakeWinreg({"astral-remote": '"C:\\app.exe"'})
     monkeypatch.setitem(sys_mod.modules, "winreg", fake)
     calls = []
 
@@ -239,8 +239,8 @@ def test_read_registration_reports_state_read_only(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess_mod, "run", lambda cmd, **kwargs: calls.append(cmd) or Proc())
 
-    result = read_registration("astral-relay", env=env)
-    assert result["valueName"] == "astral-relay"
+    result = read_registration("astral-remote", env=env)
+    assert result["valueName"] == "astral-remote"
     assert result["runKey"] == "registered"
     assert result["runCommand"] == '"C:\\app.exe"'
     assert result["logonTask"] == "present"
@@ -253,26 +253,26 @@ def test_read_registration_reports_state_read_only(tmp_path, monkeypatch):
 def test_read_registration_handles_missing_value_and_denied_registry(tmp_path, monkeypatch):
     import sys as sys_mod
 
-    from astral_relay.agent.startup import read_registration
+    from astral_remote.agent.startup import read_registration
 
     env = {"APPDATA": str(tmp_path / "roam")}
     monkeypatch.setitem(sys_mod.modules, "winreg", FakeWinreg())
-    assert read_registration("astral-relay", env=env)["runKey"] == "missing"
+    assert read_registration("astral-remote", env=env)["runKey"] == "missing"
 
     class DeniedWinreg(FakeWinreg):
         def OpenKey(self, root, path, reserved=0, access=0):
             raise OSError("denied")
 
     monkeypatch.setitem(sys_mod.modules, "winreg", DeniedWinreg())
-    assert read_registration("astral-relay", env=env)["runKey"] == "unavailable"
+    assert read_registration("astral-remote", env=env)["runKey"] == "unavailable"
 
 
 def test_read_registration_marks_an_absent_task(tmp_path, monkeypatch):
     import subprocess as subprocess_mod
     import sys as sys_mod
 
-    from astral_relay.agent.startup import read_registration
-    from astral_relay.shared import winproc
+    from astral_remote.agent.startup import read_registration
+    from astral_remote.shared import winproc
 
     monkeypatch.setitem(sys_mod.modules, "winreg", FakeWinreg())
 
@@ -286,7 +286,7 @@ def test_read_registration_marks_an_absent_task(tmp_path, monkeypatch):
         return Proc()
 
     monkeypatch.setattr(subprocess_mod, "run", fake_run)
-    assert read_registration("astral-relay", env={"APPDATA": str(tmp_path)})["logonTask"] == "absent"
+    assert read_registration("astral-remote", env={"APPDATA": str(tmp_path)})["logonTask"] == "absent"
     assert winproc.CREATE_NO_WINDOW
     assert captured["creationflags"] & winproc.CREATE_NO_WINDOW
 
@@ -295,7 +295,7 @@ def test_read_registration_survives_a_missing_task_command(tmp_path, monkeypatch
     import subprocess as subprocess_mod
     import sys as sys_mod
 
-    from astral_relay.agent.startup import read_registration
+    from astral_remote.agent.startup import read_registration
 
     monkeypatch.setitem(sys_mod.modules, "winreg", FakeWinreg())
 
@@ -303,14 +303,14 @@ def test_read_registration_survives_a_missing_task_command(tmp_path, monkeypatch
         raise OSError("schtasks not found")
 
     monkeypatch.setattr(subprocess_mod, "run", boom)
-    assert read_registration("astral-relay", env={"APPDATA": str(tmp_path)})["logonTask"] == "unknown"
+    assert read_registration("astral-remote", env={"APPDATA": str(tmp_path)})["logonTask"] == "unknown"
 
 
 def test_logon_task_registers_once(monkeypatch):
     import subprocess as subprocess_mod
 
-    from astral_relay.agent.startup import ensure_logon_task
-    from astral_relay.shared import winproc
+    from astral_remote.agent.startup import ensure_logon_task
+    from astral_remote.shared import winproc
 
     calls = []
     captured = []

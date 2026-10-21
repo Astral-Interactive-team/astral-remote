@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from astral_relay.agent.windows import inventory as inv
+from astral_remote.agent.windows import inventory as inv
 
 AGENT = {
     "hostname": "DESKTOP-TEST",
@@ -22,7 +22,7 @@ AGENT = {
     "categoryStatus": "Created new category (id 1)",
     "channelCount": 1,
     "registration": {
-        "valueName": "astral-relay",
+        "valueName": "astral-remote",
         "runKey": "registered",
         "logonTask": "present",
         "backupPresent": True,
@@ -465,7 +465,7 @@ def test_agent_section_reports_version_and_registration(stub_probes):
 
 
 def test_environment_section_withholds_values(stub_probes, tmp_path):
-    (tmp_path / "AstralRelay").mkdir()
+    (tmp_path / "AstralRemote").mkdir()
     data = inv.collect(
         dict(AGENT, logSummary={"present": True, "entries": 3, "warnings": 2, "fatals": 1,
                                 "lastTimestamp": "2026-01-01T00:00:00+00:00"}),
@@ -551,7 +551,7 @@ def test_removed_process_service_and_software_helpers_are_gone():
 
 def test_powershell_child_runs_without_a_console_window(monkeypatch):
     """A --noconsole agent must never flash a console for its children."""
-    from astral_relay.shared import winproc
+    from astral_remote.shared import winproc
 
     captured = {}
 

@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from astral_relay.agent import info_report
-from astral_relay.agent.info_report import Block, publish_report
+from astral_remote.agent import info_report
+from astral_remote.agent.info_report import Block, publish_report
 
 BOT = SimpleNamespace(id=7, bot=True)
 FOREIGN = SimpleNamespace(id=8, bot=False)
@@ -302,7 +302,7 @@ def test_performance_and_agent_share_the_last_message():
     _, pages = info_report.build_report(inventory)
     agent_page = [page for page in pages if page[0].group == "Performance & Agent"][0]
     sections = [block.section for block in agent_page if block.heading]
-    assert sections == ["Performance", "Astral Relay Agent", "Agent Environment"]
+    assert sections == ["Performance", "Astral Remote Agent", "Agent Environment"]
     text = "\n".join(block.text for block in agent_page)
     assert "**CPU utilization:** 12.5%" in text
     assert "**Agent version:** 0.1.0" in text

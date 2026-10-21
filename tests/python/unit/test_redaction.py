@@ -1,6 +1,6 @@
 # Unit tests for secret redaction. Mirrors tests/redaction.test.js.
 
-from astral_relay.shared.logging_utils import redact
+from astral_remote.shared.logging_utils import redact
 
 TOKEN = "QUJDREVGR0hJSktMTU5PUFFS.VEVTVC1BLVRPS0VO.MTIzNDU2Nzg5MEFCQ0RFRkdI"
 

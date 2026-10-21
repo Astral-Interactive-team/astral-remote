@@ -2,7 +2,7 @@
 
 import asyncio
 
-from astral_relay.agent.connection import backoff_delay, is_fatal_auth_error, login_with_backoff
+from astral_remote.agent.connection import backoff_delay, is_fatal_auth_error, login_with_backoff
 
 
 class _Err(Exception):

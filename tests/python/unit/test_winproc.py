@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from astral_relay.shared import winproc
+from astral_remote.shared import winproc
 
 
 def test_creation_flag_matches_the_windows_constant():

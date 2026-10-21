@@ -5,7 +5,7 @@ import io
 
 import pytest
 
-from astral_relay.agent.secure_input import (
+from astral_remote.agent.secure_input import (
     INTERRUPTED,
     InterruptedError,
     prompt_for_token,
@@ -31,7 +31,7 @@ def test_non_tty_refuses():
 
 
 def test_prompt_rejects_empty_with_fake_msvcrt(monkeypatch):
-    import astral_relay.agent.secure_input as mod
+    import astral_remote.agent.secure_input as mod
 
     out = FakeTTY()
     monkeypatch.setattr(mod.sys, "stdin", FakeTTY())
@@ -43,7 +43,7 @@ def test_prompt_rejects_empty_with_fake_msvcrt(monkeypatch):
 
 
 def test_prompt_without_header_keeps_single_block(monkeypatch):
-    import astral_relay.agent.secure_input as mod
+    import astral_remote.agent.secure_input as mod
 
     out = FakeTTY()
     monkeypatch.setattr(mod, "read_secure_line", lambda prefix="", input_stream=None, output_stream=None: "tok123")
@@ -55,7 +55,7 @@ def test_prompt_without_header_keeps_single_block(monkeypatch):
 
 
 def test_prompt_returns_trimmed_without_printing(monkeypatch):
-    import astral_relay.agent.secure_input as mod
+    import astral_remote.agent.secure_input as mod
 
     out = FakeTTY()
     monkeypatch.setattr(mod, "read_secure_line", lambda prefix="", input_stream=None, output_stream=None: "  tok123  ")
@@ -64,7 +64,7 @@ def test_prompt_returns_trimmed_without_printing(monkeypatch):
 
 
 def test_prompt_q_cancels_like_quit(monkeypatch):
-    import astral_relay.agent.secure_input as mod
+    import astral_remote.agent.secure_input as mod
 
     out = FakeTTY()
     monkeypatch.setattr(mod, "read_secure_line", lambda prefix="", input_stream=None, output_stream=None: "q")
@@ -76,8 +76,8 @@ def test_prompt_q_cancels_like_quit(monkeypatch):
 
 
 def test_start_cancels_back_to_menu(monkeypatch):
-    import astral_relay.agent.secure_input as secure_mod
-    from astral_relay.cli.menu import run_start
+    import astral_remote.agent.secure_input as secure_mod
+    from astral_remote.cli.menu import run_start
     from rich.console import Console
 
     def cancelled():
@@ -96,7 +96,7 @@ def test_interrupted_constant():
 def test_masked_entry_value_and_pending_drain(monkeypatch):
     import sys as sys_mod
 
-    import astral_relay.agent.secure_input as mod
+    import astral_remote.agent.secure_input as mod
 
     keys = ["a", "b", "\r", "\n", "z"]
 
