@@ -1,9 +1,9 @@
-# Read-only host facts for the managed #info channel.
-# Returns hostname, machine ID, local IPv4, and process uptime. The
-# hostname lets the operator tell managed computers apart; the full #info
-# dashboard is built from windows/inventory.py. Process uptime also feeds
-# the read-only `status` reply in managed #main channels. Still exposes no
-# usernames, SIDs, or local paths.
+# Read-only host facts for the managed #info channel and device registry.
+# Returns hostname, machine ID, local IPv4, operating-system name, and
+# process uptime. The hostname lets the operator tell managed computers
+# apart; the full #info dashboard is built from windows/inventory.py. The
+# OS name and process uptime also feed the shared device registry and the
+# read-only status reply. Still exposes no usernames, SIDs, or local paths.
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import socket
 import time
 
 _START = time.monotonic()
+_WINDOWS_NT = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"
 
 
 def get_hostname() -> str:
@@ -67,6 +68,39 @@ def get_machine_id() -> str:
         return "unknown-id"
     short = "".join(ch for ch in str(guid).lower() if ch in "0123456789abcdef")[:8]
     return short or "unknown-id"
+
+
+def get_os_name() -> str:
+    """Return a short Windows edition name for the device registry.
+
+    The registry values are the same non-secret fields the inventory report
+    shows. Off Windows, or when the registry cannot be read, a plain
+    platform description is used. No username, path, or product key is
+    included.
+    """
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WINDOWS_NT) as key:
+            product, _ = winreg.QueryValueEx(key, "ProductName")
+            try:
+                display, _ = winreg.QueryValueEx(key, "DisplayVersion")
+            except OSError:
+                display = ""
+    except (ImportError, OSError):
+        product = ""
+        display = ""
+    name = " ".join(str(product or "").split())
+    version = " ".join(str(display or "").split())
+    if name and version:
+        return f"{name} {version}"
+    if name:
+        return name
+    try:
+        fallback = platform.platform()
+    except Exception:  # noqa: BLE001 - platform metadata is optional
+        fallback = ""
+    return " ".join(str(fallback or "").split()) or "Unavailable"
 
 
 def get_uptime_seconds() -> int:

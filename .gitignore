@@ -2,11 +2,15 @@
 dist/
 build-tmp/
 *.log
+.env
+.env.*
+!.env.example
 
 # Dependencies and OS noise.
 .venv/
 __pycache__/
 .pytest_cache/
+.tmp-pytest
 *.spec
 *.egg-info/
 .DS_Store

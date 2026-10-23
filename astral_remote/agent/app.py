@@ -1,7 +1,7 @@
 # AstralRemote production entry. Runs headless inside the windowed
 # PyInstaller EXE: no banner, no menu, no prompts, no console output on
-# ordinary launch. Token and settings come from the generated embedded
-# payload module only. Fatal startup problems go to the sanitized file
+# ordinary launch. Settings come from generated non-secret payload; Host
+# credentials come only from local protected storage. Fatal startup problems go to sanitized file
 # log. Early diagnostic commands (--version, --self-test) dispatch before
 # the Discord client or payload imports load. Standard streams may be
 # None under --noconsole; exit codes are the primary signal.
@@ -109,31 +109,37 @@ def _write_report(argv: list[str], data: dict) -> None:
         pass
 
 
-async def run_agent(token: str, config: dict, start=None) -> Any:
-    """Run the agent with an in-memory token. Token never logged or stored."""
-    from astral_remote.agent.connection import is_fatal_auth_error, login_with_backoff
-    from astral_remote.agent.discord_bot import start_bot
+async def run_agent(token: str | None, config: dict, start=None) -> Any:
+    """Compatibility launcher for local Agent plus explicitly enabled Host.
 
-    if not isinstance(token, str) or token.strip() == "":
-        raise ValueError("Empty token rejected.")
-    starter = start if start is not None else (lambda: start_bot(config, token.strip()))
-    try:
-        client = await login_with_backoff(starter)
-    except Exception as err:
-        if is_fatal_auth_error(err):
-            raise RuntimeError("Discord rejected the embedded token. Rebuild the EXE with a fresh token.") from err
-        raise
+    The caller explicitly activates Host work. Discord lifecycle belongs to
+    HostRuntime.  AgentRuntime itself initializes local state first and has
+    no Discord/Gateway dependency.
+    """
+    from astral_remote.agent.runtime import AgentRuntime
+    from astral_remote.host.runtime import HostRuntime
+    from astral_remote.shared.security import IdentityStore
+
+    agent = AgentRuntime(config, node_identity_store=IdentityStore())
+    await agent.start()
+    starter = (
+        (lambda _config, _token: start())
+        if start is not None
+        else None
+    )
+    host = HostRuntime(agent, token, config, start_host=starter)
+    await host.start()
     loop = asyncio.get_running_loop()
 
     async def shutdown() -> None:
-        await client.close()
+        await host.close()
 
     for signame in ("SIGINT", "SIGTERM"):
         try:
             loop.add_signal_handler(getattr(signal, signame), lambda: asyncio.ensure_future(shutdown()))
         except (NotImplementedError, RuntimeError, OSError):
             pass
-    return client
+    return await host.wait()
 
 
 async def main(argv=None) -> int:
@@ -153,7 +159,7 @@ async def main(argv=None) -> int:
 
     apply_self_install(found["config"])
     try:
-        await run_agent(found["token"], found["config"])
+        await run_agent(None, found["config"])
         await asyncio.Event().wait()
         return EXIT_OK
     except RuntimeError as exc:

@@ -5,15 +5,21 @@
 # on_ready/reconnect behavior, concurrency, failure handling, duplicate
 # reporting without automatic deletion, the managed #info dashboard
 # (Components V2 report, in-place refresh, shrink cleanup), the managed
-# #main command channel below it, and the read-only `status` reply that is
-# scoped to each #main channel's own category.
+# #main command channel below it, the read-only `status` reply that is
+# scoped to each #main channel's own category, and the server-wide control
+# category created in parallel with host setup.
 
 import asyncio
+import datetime
 from types import SimpleNamespace
 
 import astral_remote.agent.discord_setup as setup
+import astral_remote.agent.info_report as info_report
+from astral_remote.agent import devices
 from astral_remote.agent.discord_setup import (
+    CONTROL_CATEGORY_NAME,
     INFO_CHANNEL_NAME,
+    LOGS_CHANNEL_NAME,
     MAIN_CHANNEL_NAME,
     CategoryManager,
     ensure_host_categories,
@@ -35,8 +41,11 @@ class FakeMessage:
 
     async def edit(self, content=None, view=None, **kwargs):
         # A Components V2 message must not carry plain content.
-        assert content is None, "report messages must never carry content"
-        self.views.append(view)
+        if view is not None:
+            assert content is None, "report messages must never carry content"
+            self.views.append(view)
+        if content is not None:
+            self.content = content
         return self
 
     async def delete(self):
@@ -62,6 +71,7 @@ class FakeTextChannel:
             message.views.append(view)
             self.sent.append(view)
         if content is not None:
+            message.content = content
             self.contents.append(content)
         self.messages[message.id] = message
         return message
@@ -70,6 +80,13 @@ class FakeTextChannel:
         if message_id not in self.messages:
             raise LookupError("unknown message")
         return self.messages[message_id]
+
+    async def history(self, limit=None):
+        messages = list(self.messages.values())
+        if isinstance(limit, int) and limit >= 0:
+            messages = messages[-limit:]
+        for message in messages:
+            yield message
 
 
 class FakeCategory:
@@ -131,7 +148,7 @@ def stub_collector(full=False):
             "identity": {
                 "hostname": agent.get("hostname"),
                 "installationId": agent.get("installationId"),
-                "agentStatus": "ONLINE",
+                "connection": "Connected",
                 "agentVersion": agent.get("agentVersion"),
                 "lastUpdated": "2026-01-01 00:00:00",
             },
@@ -222,8 +239,8 @@ def test_first_startup_creates_info_channel_with_system_report(tmp_path):
     assert len(channel.sent) == expected_parts(agent)
     headline = view_text(channel.sent[0])
     assert "Astral Remote" in headline and "System Information" in headline
-    assert "ONLINE" in headline
-    assert "**Agent version:** 9.9.9" in headline
+    assert f"{info_report.CONNECTION_ICONS['Connected']} **Connection: Connected**" in headline
+    assert "**Agent Version:** `9.9.9`" in headline
     assert "## Overview" in headline
     text = "\n".join(view_text(view) for view in channel.sent)
     assert "## Windows & Operating System" in text
@@ -263,7 +280,7 @@ def test_info_channel_reused_and_report_refreshed_across_restarts(tmp_path):
     assert len(channel.sent) == parts  # no duplicate report message
     # Every part was refreshed in place, so each tracked message holds two views.
     assert all(len(message.views) == 2 for message in tracked_messages)
-    assert "**Agent version:** 2.0.0" in view_text(tracked_messages[0].views[-1])
+    assert "**Agent Version:** `2.0.0`" in view_text(tracked_messages[0].views[-1])
     assert restarted.is_info_channel(channel.id) is True
 
 
@@ -359,6 +376,131 @@ def test_main_channel_failure_still_publishes_report(tmp_path, monkeypatch):
     assert manager._channel_counts[guild.id] == 1
 
 
+def test_control_category_is_created_with_only_main(tmp_path):
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    control = _run(manager.ensure_control(guild))
+
+    assert control is guild.categories[0]
+    assert control.name == CONTROL_CATEGORY_NAME
+    assert [channel.name for channel in control.channels] == [MAIN_CHANNEL_NAME]
+    main_channel = control.channels[0]
+    assert manager._store.control_category_id(guild.id) == control.id
+    assert manager._store.control_main_channel_id(guild.id) == main_channel.id
+    assert manager._store.control_logs_channel_id(guild.id) is None
+    # CONTROL #main is the shared device command channel, but it is not
+    # one of this computer's host #main channels.
+    assert manager.is_main_channel(main_channel.id) is False
+    assert manager.is_control_main_channel(main_channel.id) is True
+    assert manager.commands_for(main_channel.id) == ("device",)
+    assert manager.status_facts(main_channel.id) is None
+
+
+def test_control_category_is_reused_across_restarts(tmp_path):
+    path = tmp_path / "identity.json"
+    first = CategoryManager("HOST", "machineid", state_path=path, collect_fn=stub_collector())
+    guild = FakeGuild()
+    category = _run(first.ensure_control(guild))
+
+    restarted = CategoryManager("HOST", "machineid", state_path=path, collect_fn=stub_collector())
+    reused = _run(restarted.ensure_control(FakeGuild(categories=guild.categories)))
+    assert reused is category
+    assert len(guild.categories) == 1
+    assert [channel.name for channel in category.channels] == [MAIN_CHANNEL_NAME]
+
+
+def test_existing_control_channels_are_adopted_without_deleting_logs(tmp_path):
+    manager = make_manager(tmp_path)
+    category = FakeCategory(77, CONTROL_CATEGORY_NAME)
+    main_channel = FakeTextChannel(701, MAIN_CHANNEL_NAME)
+    logs_channel = FakeTextChannel(702, LOGS_CHANNEL_NAME)
+    category.channels.extend([main_channel, logs_channel])
+    guild = FakeGuild(categories=[category])
+
+    assert _run(manager.ensure_control(guild)) is category
+    # The legacy #logs channel stays untouched; this build creates only #main.
+    assert len(category.channels) == 2
+    assert manager._store.control_main_channel_id(guild.id) == 701
+    assert manager._store.control_logs_channel_id(guild.id) is None
+    assert category.channels[1] is logs_channel
+
+
+def test_control_category_is_created_once_by_startup(tmp_path):
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    bot = SimpleNamespace(guilds=[guild])
+    host_name = host_category_name("HOST", manager.installation_id)
+
+    assert _run(ensure_host_categories(bot, "HOST", "machineid", manager=manager)) == 1
+    assert [category.name for category in guild.categories] == [CONTROL_CATEGORY_NAME, host_name]
+    assert guild.created == [CONTROL_CATEGORY_NAME, host_name]
+
+    # Re-running startup (on_ready after a re-identify) reuses both categories.
+    assert _run(ensure_host_categories(bot, "HOST", "machineid", manager=manager)) == 1
+    assert len(guild.categories) == 2
+    assert guild.created == [CONTROL_CATEGORY_NAME, host_name]
+
+
+def test_control_failure_warns_and_keeps_host_setup(tmp_path, monkeypatch):
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    host = _run(manager.ensure_guild(guild))
+
+    warnings = []
+    monkeypatch.setattr(setup, "warn", lambda message, detail=None: warnings.append(message))
+
+    async def boom(guild):
+        raise RuntimeError("Missing Permissions")
+
+    monkeypatch.setattr(manager, "_ensure_control_category", boom)
+    assert _run(manager.ensure_control(guild)) is None
+    assert warnings == ["Control category unavailable."]
+    assert guild.categories == [host]
+
+
+def test_control_setup_does_not_wait_for_the_host_lock(tmp_path):
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+
+    async def scenario():
+        async with manager._lock(guild.id):
+            return await asyncio.wait_for(manager.ensure_control(guild), timeout=1)
+
+    assert _run(scenario()) is not None
+    assert guild.categories[0].name == CONTROL_CATEGORY_NAME
+
+
+def test_control_category_is_created_while_the_report_is_publishing(tmp_path, monkeypatch):
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    report_started = asyncio.Event()
+    release_report = asyncio.Event()
+
+    async def slow_publish(guild, channel, config, runtime, announce=True):
+        report_started.set()
+        await release_report.wait()
+
+    monkeypatch.setattr(manager, "_publish_report", slow_publish)
+    bot = SimpleNamespace(guilds=[guild])
+
+    async def scenario():
+        task = asyncio.create_task(
+            ensure_host_categories(bot, "HOST", "machineid", manager=manager))
+        try:
+            await report_started.wait()
+            for _ in range(100):
+                if any(category.name == CONTROL_CATEGORY_NAME for category in guild.categories):
+                    break
+                await asyncio.sleep(0)
+            # The report is still blocked, but control setup already finished.
+            assert any(category.name == CONTROL_CATEGORY_NAME for category in guild.categories)
+        finally:
+            release_report.set()
+            await task
+
+    _run(scenario())
+
+
 def test_refresh_republishes_in_place_without_new_channels(tmp_path):
     manager = make_manager(tmp_path)
     guild = FakeGuild()
@@ -371,7 +513,7 @@ def test_refresh_republishes_in_place_without_new_channels(tmp_path):
     assert len(info_channel.sent) == parts  # edited, not re-sent
     assert len(category.channels) == 2  # no channel duplicated
     assert all(len(message.views) == 2 for message in tracked)
-    assert "**Agent version:** 2.0.0" in view_text(tracked[0].views[-1])
+    assert "**Agent Version:** `2.0.0`" in view_text(tracked[0].views[-1])
 
 
 def test_refresh_skips_guilds_that_never_resolved(tmp_path):
@@ -507,9 +649,16 @@ def test_repeated_on_ready_events_do_not_duplicate(tmp_path):
     bot = SimpleNamespace(guilds=[guild])
     for _ in range(4):
         assert _run(ensure_host_categories(bot, "HOST", "machineid", manager=manager)) == 1
-    assert guild.attempts == 1
-    assert len(guild.created) == 1
-    assert len(guild.categories[0].channels) == 2  # #info and #main, once each
+    # One host category and one control category are created in total.
+    assert guild.attempts == 2
+    assert len(guild.created) == 2
+    assert guild.created[0] == CONTROL_CATEGORY_NAME
+    assert [channel.name for channel in guild.categories[1].channels] == [
+        INFO_CHANNEL_NAME, MAIN_CHANNEL_NAME
+    ]  # #info and #main, once each
+    assert [channel.name for channel in guild.categories[0].channels] == [
+        MAIN_CHANNEL_NAME
+    ]
 
 
 def test_reconnection_reuses_remembered_category(tmp_path):
@@ -646,8 +795,11 @@ def test_covers_every_guild_and_counts(tmp_path):
     bot = SimpleNamespace(guilds=guilds)
     manager = make_manager(tmp_path)
     assert _run(ensure_host_categories(bot, "HOST", "machineid", manager=manager)) == 2
-    assert guilds[0].attempts == 1
-    assert guilds[1].attempts == 1
+    # Each guild attempts the host category and then the control category;
+    # the failing guild raises on both attempts.
+    assert guilds[0].attempts == 2
+    assert guilds[1].attempts == 2
+    assert guilds[0].created[0] == CONTROL_CATEGORY_NAME
 
 
 def test_missing_guilds_list_is_safe(tmp_path):
@@ -667,8 +819,28 @@ def test_runtime_facts_ignore_unusable_latency():
 
 def test_runtime_facts_report_the_reconnect_count():
     facts = setup.runtime_facts(SimpleNamespace(latency=0.02, _astral_reconnects=3))
-    assert facts == {"connected": True, "latencySeconds": 0.02, "reconnects": 3}
+    assert facts == {"connected": None, "latencySeconds": 0.02, "reconnects": 3}
     assert setup.runtime_facts(SimpleNamespace())["reconnects"] is None
+
+
+def test_runtime_facts_confirm_only_a_live_gateway_link():
+    live = SimpleNamespace(
+        ws=SimpleNamespace(socket=SimpleNamespace(closed=False)),
+        is_ready=lambda: True,
+        is_closed=lambda: False,
+        latency=0.02,
+    )
+    assert setup.runtime_facts(live)["connected"] is True
+    assert setup.runtime_facts(SimpleNamespace(
+        ws=SimpleNamespace(socket=SimpleNamespace(closed=True)),
+        is_ready=lambda: True,
+        is_closed=lambda: False,
+    ))["connected"] is False
+    assert setup.runtime_facts(SimpleNamespace(
+        is_ready=lambda: False,
+        is_closed=lambda: True,
+    ))["connected"] is False
+    assert setup.runtime_facts(SimpleNamespace())["connected"] is None
 
 
 def test_status_command_is_scoped_to_main_channels(tmp_path):
@@ -820,3 +992,343 @@ def test_on_message_honours_the_configured_prefix(tmp_path, monkeypatch):
     assert main_channel.contents == []
     _run(handler(MemberMessage(main_channel, "pc!status")))
     assert len(main_channel.contents) == 1
+
+
+class DeviceMemberMessage:
+    """Member message used by the CONTROL #main device tests."""
+
+    def __init__(self, channel, content, manage_guild=True, author_id=42, owner=False,
+                 bot=False):
+        self.author = SimpleNamespace(
+            id=author_id,
+            bot=bot,
+            guild_permissions=SimpleNamespace(
+                manage_guild=manage_guild,
+                administrator=False,
+            ),
+        )
+        self.channel = channel
+        self.content = content
+        self.guild = SimpleNamespace(owner_id=42 if owner else 7)
+        self.deleted = False
+
+    async def delete(self):
+        self.deleted = True
+
+
+def device_messages(channel):
+    """Return decoded device records posted in a CONTROL channel."""
+    found = []
+    for message in channel.messages.values():
+        record = devices.decode_record(message.content)
+        if record is not None:
+            found.append((message, record))
+    return found
+
+
+def heartbeat_messages(channel):
+    """Return decoded heartbeat records posted in a host #main channel."""
+    found = []
+    for message in channel.messages.values():
+        record = devices.decode_heartbeat(message.content)
+        if record is not None:
+            found.append((message, record))
+    return found
+
+
+def start_agents(tmp_path, guild, count=1):
+    """Start one or more isolated Agent installations in the same guild."""
+    managers = []
+    bot = SimpleNamespace(guilds=[guild])
+    for index in range(count):
+        manager = CategoryManager(
+            f"HOST-{index}", f"machineid-{index}",
+            state_path=tmp_path / f"identity-{index}.json",
+            collect_fn=stub_collector(),
+        )
+        assert _run(ensure_host_categories(
+            bot, f"HOST-{index}", f"machineid-{index}", manager=manager,
+            config={"agentVersion": "0.1.0"},
+        )) == 1
+        managers.append(manager)
+    return managers
+
+
+def test_startup_registers_the_device_and_writes_one_heartbeat(tmp_path):
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    assert _run(ensure_host_categories(
+        SimpleNamespace(guilds=[guild]), "HOST", "machineid", manager=manager,
+        config={"agentVersion": "0.1.0"},
+    )) == 1
+    control = guild.categories[0]
+    host = guild.categories[1]
+    control_main = control.channels[0]
+    host_main = host.channels[1]
+
+    entries = device_messages(control_main)
+    assert len(entries) == 1
+    _, record = entries[0]
+    assert record["installationId"] == manager.installation_id
+    assert record["hostname"] == "HOST"
+    assert record["agentVersion"] == "0.1.0"
+    assert record["operatingSystem"]
+    assert record["categoryId"] == host.id
+    assert "Created new category" in record["categoryStatus"]
+    assert devices.parse_timestamp(record["lastHeartbeat"]) is not None
+    assert devices.classify_device(record) == "Connected"
+    assert manager._store.device_message_id(guild.id) == entries[0][0].id
+
+    heartbeats = heartbeat_messages(host_main)
+    assert len(heartbeats) == 1
+    heartbeat = heartbeats[0][1]
+    assert heartbeat["installationId"] == manager.installation_id
+    assert heartbeat["lastHeartbeat"] == record["lastHeartbeat"]
+    assert manager._store.heartbeat_message_id(guild.id) == heartbeats[0][0].id
+    # The registry entry is plain content, not a Components V2 report.
+    assert control_main.contents[0].startswith("```astral-device\n")
+
+
+def test_restart_updates_the_same_registry_and_heartbeat_messages(tmp_path):
+    path = tmp_path / "identity.json"
+    bot = SimpleNamespace(guilds=[])
+    first = CategoryManager("HOST", "machineid", state_path=path,
+                            collect_fn=stub_collector())
+    guild = FakeGuild()
+    bot.guilds = [guild]
+    _run(ensure_host_categories(bot, "HOST", "machineid", manager=first,
+                                config={"agentVersion": "0.1.0"}))
+    control_main = guild.categories[0].channels[0]
+    host_main = guild.categories[1].channels[1]
+    first_record = device_messages(control_main)[0][1]
+    first_registered = first_record["registeredAt"]
+    control_messages = len(control_main.messages)
+    heartbeat_messages_count = len(host_main.messages)
+
+    restarted = CategoryManager("HOST", "machineid", state_path=path,
+                                collect_fn=stub_collector())
+    _run(ensure_host_categories(bot, "HOST", "machineid", manager=restarted,
+                                config={"agentVersion": "2.0.0"}))
+
+    assert len(guild.categories) == 2
+    assert len(control_main.messages) == control_messages
+    assert len(host_main.messages) == heartbeat_messages_count
+    entries = device_messages(control_main)
+    assert len(entries) == 1
+    record = entries[0][1]
+    assert record["installationId"] == first.installation_id
+    assert record["registeredAt"] == first_registered
+    assert record["agentVersion"] == "2.0.0"
+    assert restarted._store.device_message_id(guild.id) == entries[0][0].id
+
+
+def test_refresh_edits_the_same_heartbeat_and_registry_messages(tmp_path, monkeypatch):
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    _run(ensure_host_categories(SimpleNamespace(guilds=[guild]), "HOST", "machineid",
+                                manager=manager, config={"agentVersion": "0.1.0"}))
+    control_main = guild.categories[0].channels[0]
+    host_main = guild.categories[1].channels[1]
+    registry_message = device_messages(control_main)[0][0]
+    heartbeat_message = heartbeat_messages(host_main)[0][0]
+    before = len(control_main.messages), len(host_main.messages)
+
+    later = datetime.datetime(2026, 10, 23, 12, 5, 0, tzinfo=datetime.timezone.utc)
+    monkeypatch.setattr(devices, "utc_now", lambda: later)
+    assert _run(manager.refresh(guild, {"agentVersion": "0.1.0"})) is True
+
+    assert (len(control_main.messages), len(host_main.messages)) == before
+    assert device_messages(control_main)[0][0] is registry_message
+    assert heartbeat_messages(host_main)[0][0] is heartbeat_message
+    record = devices.decode_record(registry_message.content)
+    heartbeat = devices.decode_heartbeat(heartbeat_message.content)
+    assert record["lastHeartbeat"] == "2026-10-23T12:05:00Z"
+    assert heartbeat["lastHeartbeat"] == record["lastHeartbeat"]
+    assert devices.classify_device(record) == "Connected"
+
+
+def test_device_list_details_permissions_and_ambiguous_prefix(tmp_path, monkeypatch):
+    from astral_remote.agent import discord_bot
+
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    _run(ensure_host_categories(SimpleNamespace(guilds=[guild]), "HOST", "machineid",
+                                manager=manager, config={"agentVersion": "0.1.0"}))
+    control_main = guild.categories[0].channels[0]
+    host_main = guild.categories[1].channels[1]
+    monkeypatch.setattr(setup, "_default_manager", manager)
+    handler = discord_bot.build_bot({"prefix": "!", "agentVersion": "0.1.0"}).on_message
+    control_main.contents.clear()
+
+    _run(handler(DeviceMemberMessage(control_main, "!device")))
+    assert control_main.contents
+    listing = control_main.contents[0]
+    assert listing.startswith("```\n") and listing.endswith("\n```")
+    assert "ASTRAL REMOTE — DEVICES" in listing
+    assert "Total Devices : 1" in listing
+    assert manager.installation_id in listing
+    assert "HOST" in listing
+
+    # A non-admin member gets a denial and no registry data.
+    control_main.contents.clear()
+    denied = DeviceMemberMessage(control_main, "!device", manage_guild=False, author_id=99)
+    _run(handler(denied))
+    assert len(control_main.contents) == 1
+    assert "Permission denied" in control_main.contents[0]
+    assert manager.installation_id not in control_main.contents[0]
+
+    # A unique prefix resolves the same device.
+    control_main.contents.clear()
+    _run(handler(DeviceMemberMessage(control_main, f"!device {manager.installation_id[:8]}")))
+    assert len(control_main.contents) == 1
+    assert "ASTRAL REMOTE — DEVICE DETAILS" in control_main.contents[0]
+    assert "Status" in control_main.contents[0] and "Connected" in control_main.contents[0]
+    assert manager.installation_id in control_main.contents[0]
+    assert "Public IP" not in control_main.contents[0]
+    assert "MAC" not in control_main.contents[0]
+
+    # Two records sharing a prefix are ambiguous, not silently chosen.
+    _run(control_main.send(devices.encode_record({
+        "installationId": "abc1111111111111", "hostname": "PC-1",
+        "operatingSystem": "Windows 11 Pro", "agentVersion": "0.1.0",
+        "lastHeartbeat": "2026-10-23T11:59:00Z", "registeredAt": "2026-10-20T00:00:00Z",
+    })))
+    _run(control_main.send(devices.encode_record({
+        "installationId": "abc2222222222222", "hostname": "PC-2",
+        "operatingSystem": "Windows 11 Pro", "agentVersion": "0.1.0",
+        "lastHeartbeat": "2026-10-23T11:59:00Z", "registeredAt": "2026-10-20T00:00:00Z",
+    })))
+    control_main.contents.clear()
+    _run(handler(DeviceMemberMessage(control_main, "!device abc")))
+    assert "Ambiguous installation ID prefix." in control_main.contents[0]
+    assert "abc1111111111111" in control_main.contents[0]
+    assert "abc2222222222222" in control_main.contents[0]
+
+    # Unknown IDs are reported as not found; no example device is invented.
+    control_main.contents.clear()
+    _run(handler(DeviceMemberMessage(control_main, "!device doesnotexist")))
+    assert "Device not found" in control_main.contents[0]
+    assert "DESKTOP" not in control_main.contents[0]
+
+    # `device` is not available in the host #main, and the bot ignores its
+    # own messages, DMs, and unknown channels.
+    host_main.contents.clear()
+    _run(handler(DeviceMemberMessage(host_main, "!device")))
+    assert host_main.contents == []
+    control_main.contents.clear()
+    _run(handler(DeviceMemberMessage(control_main, "!device", author_id=9001, bot=True)))
+    _run(handler(DeviceMemberMessage(FakeTextChannel(4242, "dm"), "!device")))
+    assert control_main.contents == []
+
+
+def test_old_heartbeat_is_disconnected_in_the_list(tmp_path, monkeypatch):
+    from astral_remote.agent import discord_bot
+
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    _run(ensure_host_categories(SimpleNamespace(guilds=[guild]), "HOST", "machineid",
+                                manager=manager, config={"agentVersion": "0.1.0"}))
+    control_main = guild.categories[0].channels[0]
+    message, record = device_messages(control_main)[0]
+    record["lastHeartbeat"] = "2026-10-22T00:00:00Z"
+    record["updatedAt"] = "2026-10-22T00:00:00Z"
+    message.content = devices.encode_record(record)
+    monkeypatch.setattr(setup, "_default_manager", manager)
+    handler = discord_bot.build_bot({"prefix": "!"}).on_message
+    control_main.contents.clear()
+
+    _run(handler(DeviceMemberMessage(control_main, "!device")))
+    listing = control_main.contents[0]
+    assert "Disconnected  : 1" in listing
+    assert "[ DISCONNECTED ]" in listing
+    assert "Last Seen" in listing
+
+
+def test_multiple_agents_share_the_control_registry(tmp_path):
+    guild = FakeGuild()
+    managers = start_agents(tmp_path, guild, 2)
+    control_main = guild.categories[0].channels[0]
+
+    entries = device_messages(control_main)
+    assert len(entries) == 2
+    ids = {record["installationId"] for _, record in entries}
+    assert ids == {manager.installation_id for manager in managers}
+    for manager in managers:
+        records = _run(manager.device_records(control_main.id))
+        assert {record["installationId"] for record in records} == ids
+
+
+def test_registration_write_failure_is_not_recorded_as_success(tmp_path):
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    _run(manager.ensure_guild(guild))
+    _run(manager.ensure_control(guild))
+    control_main = guild.categories[1].channels[0]
+
+    async def fail_send(content=None, view=None, **kwargs):
+        raise RuntimeError("Missing Permissions")
+
+    control_main.send = fail_send
+    assert _run(manager.register_device(guild, {"agentVersion": "0.1.0"})) is False
+    assert manager._store.device_message_id(guild.id) is None
+    assert device_messages(control_main) == []
+
+
+def test_heartbeat_write_failure_leaves_the_device_unknown(tmp_path):
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    _run(manager.ensure_guild(guild))
+    _run(manager.ensure_control(guild))
+    control = next(category for category in guild.categories if category.name == CONTROL_CATEGORY_NAME)
+    host = next(category for category in guild.categories if category.name != CONTROL_CATEGORY_NAME)
+    control_main = control.channels[0]
+    host_main = host.channels[1]
+
+    async def fail_send(content=None, view=None, **kwargs):
+        raise RuntimeError("Missing Permissions")
+
+    host_main.send = fail_send
+    assert _run(manager.register_device(guild, {"agentVersion": "0.1.0"})) is True
+    record = device_messages(control_main)[0][1]
+    assert record["lastHeartbeat"] is None
+    assert devices.classify_device(record) == "Unknown"
+    assert manager._store.heartbeat_message_id(guild.id) is None
+
+
+def test_device_list_survives_a_partial_send_failure(tmp_path, monkeypatch):
+    from astral_remote.agent import discord_bot
+
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    _run(ensure_host_categories(SimpleNamespace(guilds=[guild]), "HOST", "machineid",
+                                manager=manager, config={"agentVersion": "0.1.0"}))
+    control_main = guild.categories[0].channels[0]
+    for index in range(120):
+        _run(control_main.send(devices.encode_record({
+            "installationId": f"{index:016x}", "hostname": f"PC-{index:03d}",
+            "operatingSystem": "Windows 11 Pro", "agentVersion": "0.1.0",
+            "lastHeartbeat": "2026-10-23T11:59:00Z",
+            "registeredAt": "2026-10-20T00:00:00Z",
+        })))
+    monkeypatch.setattr(setup, "_default_manager", manager)
+    handler = discord_bot.build_bot({"prefix": "!"}).on_message
+    control_main.contents.clear()
+    records = _run(manager.device_records(control_main.id))
+    parts = len(devices.format_devices(records, "!", now=devices.utc_now()))
+    assert parts > 1
+
+    original_send = control_main.send
+    calls = {"count": 0}
+
+    async def flaky_send(content=None, view=None, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise RuntimeError("temporary send failure")
+        return await original_send(content=content, view=view, **kwargs)
+
+    control_main.send = flaky_send
+    _run(handler(DeviceMemberMessage(control_main, "!device")))
+    assert calls["count"] == parts
+    # One part failed, but the remaining parts were still attempted.
+    assert len(control_main.contents) == parts - 1
+    assert all(part.startswith("```\n") for part in control_main.contents)

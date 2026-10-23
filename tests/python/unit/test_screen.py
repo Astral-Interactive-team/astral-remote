@@ -287,7 +287,7 @@ def test_generate_result_has_no_panel(monkeypatch):
     import astral_remote.builder.build as build_mod
     import astral_remote.cli.menu as menu_mod
 
-    monkeypatch.setattr(build_mod, "prompt_build_token", lambda **kwargs: (_ for _ in ()).throw(ValueError("Empty token rejected.")))
+    monkeypatch.setattr(build_mod, "build_agent", lambda **kwargs: (_ for _ in ()).throw(ValueError("Build rejected.")))
     stdin = FakePipe()
     monkeypatch.setattr(sys, "stdin", stdin)
     console = Console(file=FakePipe(), force_terminal=False, no_color=True)

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import astral_remote.builder.build as build_mod
-from astral_remote.builder.build import archive_stale_output, resolve_build_token
+from astral_remote.builder.build import archive_stale_output
 from astral_remote.shared.errors import BuildError
 from tests.python.unit.test_payload import TOKEN_A
 
@@ -144,14 +144,6 @@ def test_prompt_exe_name_is_themed_on_tty(monkeypatch):
     assert plain == f"[Output EXE name] (default: {build_mod.DEFAULT_EXE_NAME}): "
 
 
-def test_resolve_token_validates_before_work():
-    calls = []
-    with pytest.raises(BuildError):
-        resolve_build_token(token="junk", prompt_token=lambda: calls.append(1) or "x")
-    assert calls == []
-    assert resolve_build_token(token="  " + TOKEN_A + " ", prompt_token=lambda: (_ for _ in ()).throw(AssertionError())) == TOKEN_A
-
-
 def test_prompt_bool_parses_answers(monkeypatch):
     import io
 
@@ -198,7 +190,7 @@ def test_build_agent_fails_fast_without_pyinstaller(tmp_path, monkeypatch):
     monkeypatch.setattr(build_mod, "BUILD_TMP", tmp_path / "build-tmp")
     monkeypatch.setattr(build_mod.importlib.util, "find_spec", lambda name: None)
     with pytest.raises(BuildError) as excinfo:
-        build_mod.build_agent(token=TOKEN_A)
+        build_mod.build_agent()
     assert "requirements.txt" in str(excinfo.value)
     assert not (tmp_path / "build-tmp").exists()
 
@@ -213,13 +205,14 @@ def test_archive_stale_output(tmp_path):
     assert not exe.exists() and Path(backup).exists()
 
 
-def test_build_aborts_fast_on_bad_token_and_keeps_output(tmp_path, monkeypatch):
+def test_build_keeps_output_when_packager_is_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(build_mod, "DIST_DIR", tmp_path)
     monkeypatch.setattr(build_mod, "OUTPUT_EXE", tmp_path / "AstralRemote-Agent.exe")
     monkeypatch.setattr(build_mod, "BUILD_TMP", tmp_path / "build-tmp")
     before = None
+    monkeypatch.setattr(build_mod.importlib.util, "find_spec", lambda name: None)
     with pytest.raises(BuildError):
-        build_mod.build_agent(token="junk")
+        build_mod.build_agent()
     assert (tmp_path / "AstralRemote-Agent.exe").exists() is False
 
 
@@ -252,7 +245,6 @@ def test_generate_cancel_returns_to_menu(monkeypatch):
         raise KeyboardInterrupt()
 
     monkeypatch.setattr(build_mod, "build_agent", cancelled)
-    monkeypatch.setattr(build_mod, "prompt_build_token", lambda **kwargs: TOKEN_A)
     stdin = _FakePipe()
     monkeypatch.setattr(sys, "stdin", stdin)
     console = Console(file=_FakePipe(), force_terminal=False, no_color=True)
@@ -275,7 +267,6 @@ def test_generate_passes_the_configured_prefix(monkeypatch):
                 "prefix": kwargs["prefix"]}
 
     monkeypatch.setattr(build_mod, "build_agent", fake_build)
-    monkeypatch.setattr(build_mod, "prompt_build_token", lambda **kwargs: TOKEN_A)
     monkeypatch.setattr(build_mod, "prompt_prefix", lambda: "pc!")
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))  # every other prompt defaults
     out = io.StringIO()

@@ -8,25 +8,22 @@
 
 from __future__ import annotations
 
-from astral_remote.agent.payload import PAYLOAD_VERSION, is_plausible_bot_token
+from astral_remote.agent.payload import PAYLOAD_VERSION
 from astral_remote.shared.config import validate_config
 from astral_remote.shared.errors import BuildError
 
 MAX_PAYLOAD_BYTES = 65536
 
 
-def render_payload_module(token: str, config: dict) -> str:
-    """Render the _embedded_payload.py source. Throws on bad token or config."""
-    if not is_plausible_bot_token(token):
-        raise BuildError("Token rejected: expected bot token shape (three dot-separated parts).")
+def render_payload_module(config: dict) -> str:
+    """Render non-secret _embedded_payload.py source for one EXE build."""
     problems = validate_config(config)
     if problems:
         raise BuildError(f"Payload config invalid: {problems[0]}")
-    body = f"PAYLOAD_V = {PAYLOAD_VERSION}\nTOKEN = {token.strip()!r}\nCONFIG = {config!r}\n"
+    body = f"PAYLOAD_V = {PAYLOAD_VERSION}\nCONFIG = {config!r}\n"
     if len(body.encode("utf-8")) > MAX_PAYLOAD_BYTES:
         raise BuildError("Payload too large.")
     header = (
-        "# Generated embedded payload. Do not commit. Treat the built EXE like a credential:\n"
-        "# anyone holding the binary can recover the token. No encryption is used.\n"
+        "# Generated non-secret runtime configuration. Do not commit.\n"
     )
     return header + body

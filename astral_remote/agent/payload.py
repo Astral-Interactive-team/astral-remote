@@ -32,11 +32,9 @@ def load_embedded_payload() -> dict[str, Any]:
         from astral_remote import _embedded_payload as embedded  # type: ignore
     except ImportError as exc:
         raise FileNotFoundError("No embedded payload. Rebuild the EXE with the current builder.") from exc
-    token = getattr(embedded, "TOKEN", None)
     config = getattr(embedded, "CONFIG", None)
     version = getattr(embedded, "PAYLOAD_V", None)
     if version != PAYLOAD_VERSION:
         raise ValueError("Payload version unsupported.")
-    if not is_plausible_bot_token(token):
-        raise ValueError("Embedded payload holds no bot token. Rebuild the EXE with a fresh token.")
-    return {"token": token.strip(), "config": require_valid_config(config)}
+    # Legacy embedded modules may still contain TOKEN. Never read or use it.
+    return {"config": require_valid_config(config)}

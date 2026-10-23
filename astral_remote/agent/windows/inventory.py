@@ -894,6 +894,20 @@ def _enum(value, mapping: dict) -> str:
     return mapping.get(number, f"Unknown ({number})")
 
 
+def _connection_state(value) -> str:
+    """Render the gateway state from a tri-state flag, never assuming Online.
+
+    True means a live gateway connection was confirmed, False means it was
+    confirmed lost, and anything else (including None) is Unknown because the
+    collector cannot prove either state.
+    """
+    if value is True:
+        return "Connected"
+    if value is False:
+        return "Disconnected"
+    return "Unknown"
+
+
 def build_network_section(ps: dict, public_ip: str | None, connectivity: bool | None,
                           agent: dict | None) -> dict:
     """Collect one entry per network adapter plus the connection summary."""
@@ -977,7 +991,7 @@ def build_network_section(ps: dict, public_ip: str | None, connectivity: bool | 
     return {
         "adapters": rendered,
         "internetConnectivity": format_text(internet),
-        "discordConnection": "Connected" if connected else UNAVAILABLE,
+        "discordConnection": _connection_state(connected),
         "discordLatency": _latency(facts.get("latencySeconds")),
         "publicIpv4": format_text(public_ip),
     }
@@ -1281,7 +1295,7 @@ def build_identity_section(local: dict, ps: dict, facts: dict, public_ip, now) -
         "publicIpv4": format_text(public_ip),
         "osName": _pick(os_info.get("Caption"), local.get("osName")),
         "osVersion": _os_version_text(os_info, local),
-        "agentStatus": "ONLINE" if facts.get("connected") else "UNKNOWN",
+        "agentStatus": _connection_state(facts.get("connected")),
         "agentVersion": format_text(facts.get("agentVersion")),
         "lastUpdated": _now(now).strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -1308,7 +1322,7 @@ def build_agent_section(facts: dict) -> dict:
         "installationId": format_text(facts.get("installationId")),
         "uptime": format_duration(facts.get("uptimeSeconds")),
         "connection": format_text(
-            facts.get("connection") or ("Connected" if facts.get("connected") else None)
+            facts.get("connection") or _connection_state(facts.get("connected"))
         ),
         "latency": _latency(facts.get("latencySeconds")),
         "reconnectCount": (

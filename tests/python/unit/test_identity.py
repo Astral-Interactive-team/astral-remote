@@ -108,6 +108,55 @@ def test_info_channel_and_message_memory_round_trip(tmp_path):
     assert StateStore(path).main_channel_id(12345) == 556
 
 
+def test_control_category_and_channel_memory_round_trip(tmp_path):
+    path = tmp_path / "identity.json"
+    store = StateStore(path)
+    store.remember_control(12345, category_id=800, main_channel_id=801, logs_channel_id=802)
+
+    reopened = StateStore(path)
+    assert reopened.control_category_id(12345) == 800
+    assert reopened.control_main_channel_id(12345) == 801
+    assert reopened.control_logs_channel_id(12345) == 802
+    assert reopened.control_category_id(99999) is None
+    # The host category can be remembered later without dropping control IDs.
+    reopened.remember(12345, 999, "HOST [abcdef]")
+    reopened.remember_control(12345, main_channel_id=803)
+    saved = StateStore(path)
+    assert saved.control_category_id(12345) == 800
+    assert saved.control_main_channel_id(12345) == 803
+    assert saved.control_logs_channel_id(12345) == 802
+
+
+def test_control_state_survives_without_a_host_category(tmp_path):
+    path = tmp_path / "identity.json"
+    store = StateStore(path)
+    store.remember_control(12345, category_id=800)
+
+    reopened = StateStore(path)
+    assert reopened.control_category_id(12345) == 800
+    assert reopened.category_id(12345) is None
+
+
+def test_device_message_memory_round_trip(tmp_path):
+    path = tmp_path / "identity.json"
+    store = StateStore(path)
+    store.remember_control(12345, category_id=800, main_channel_id=801)
+    store.remember_device_message(12345, 901)
+    store.remember_heartbeat_message(12345, 902)
+
+    reopened = StateStore(path)
+    assert reopened.device_message_id(12345) == 901
+    assert reopened.heartbeat_message_id(12345) == 902
+    assert reopened.control_main_channel_id(12345) == 801
+    assert reopened.device_message_id(99999) is None
+    assert reopened.heartbeat_message_id(99999) is None
+
+    reopened.remember_control(12345, main_channel_id=803)
+    saved = StateStore(path)
+    assert saved.device_message_id(12345) == 901
+    assert saved.heartbeat_message_id(12345) == 902
+
+
 def test_report_message_list_round_trips_and_drops_the_legacy_field(tmp_path):
     path = tmp_path / "identity.json"
     store = StateStore(path)
@@ -157,6 +206,31 @@ def test_load_state_drops_malformed_info_ids(tmp_path):
     }), encoding="utf-8")
     state = load_state(malformed)
     assert state["guilds"]["1"] == {"categoryId": 7, "name": "n", "infoMessageId": 5}
+
+
+def test_load_state_drops_malformed_control_ids(tmp_path):
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text(json.dumps({
+        "installationId": "abc",
+        "guilds": {"1": {"categoryId": 7, "name": "n",
+                         "controlCategoryId": "x", "controlMainChannelId": True,
+                         "controlLogsChannelId": 9,
+                         "deviceMessageId": False, "heartbeatMessageId": 12}},
+    }), encoding="utf-8")
+    state = load_state(malformed)
+    assert state["guilds"]["1"] == {
+        "categoryId": 7, "name": "n", "controlLogsChannelId": 9,
+        "heartbeatMessageId": 12,
+    }
+
+
+def test_load_state_keeps_a_control_only_record(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({
+        "installationId": "abc",
+        "guilds": {"1": {"controlCategoryId": 800}},
+    }), encoding="utf-8")
+    assert load_state(path)["guilds"]["1"] == {"name": "", "controlCategoryId": 800}
 
 
 def test_load_state_tolerates_missing_and_corrupt(tmp_path):

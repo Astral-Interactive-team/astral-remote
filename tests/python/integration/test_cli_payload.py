@@ -8,20 +8,19 @@ from pathlib import Path
 
 from astral_remote.builder.payload_codegen import render_payload_module
 from astral_remote.shared.config import default_runtime_config
-from tests.python.unit.test_payload import TOKEN_A
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_codegen_module_loads_through_import(tmp_path, monkeypatch):
-    source = render_payload_module(TOKEN_A, default_runtime_config())
+    source = render_payload_module(default_runtime_config())
     target = tmp_path / "_embedded_payload.py"
     target.write_text(source, encoding="utf-8")
     monkeypatch.syspath_prepend(str(tmp_path))
     import importlib
 
     module = importlib.import_module("_embedded_payload")
-    assert module.TOKEN == TOKEN_A
+    assert not hasattr(module, "TOKEN")
     assert module.CONFIG["startupName"] == "AstralRemote"
 
 

@@ -334,30 +334,20 @@ def wait_to_continue(console: Console, enabled: bool) -> None:
 def run_generate(console: Console, enabled: bool, show_token_header: bool = True) -> bool:
     """Run the EXE build with staged progress reporting. Returns True on success.
 
-    `show_token_header` keeps the void-style token header for standalone
-    builds (the `build` subcommand). The interactive menu passes False
-    because it keeps its own prompt block on screen.
+    Token setup is intentionally separate: credentials set stores it with
+    current-user DPAPI and build never receives it.
     """
     from rich.text import Text as RichText
 
     from astral_remote.builder.build import (
         build_agent,
         prompt_autostart,
-        prompt_build_token,
         prompt_exe_name,
         prompt_install_appdata,
         prompt_prefix,
     )
 
-    stages = ["Validating token", "Preparing template", "Injecting payload", "Verifying output"]
-    try:
-        token = prompt_build_token(show_header=show_token_header)
-    except InterruptedError:
-        return False
-    except (OSError, ValueError) as err:
-        console.print(status_panel("warn", str(err), enabled))
-        wait_to_continue(console, enabled)
-        return False
+    stages = ["Preparing template", "Packaging", "Verifying output"]
     try:
         output_name = prompt_exe_name()
         prefix = prompt_prefix()
@@ -374,7 +364,7 @@ def run_generate(console: Console, enabled: bool, show_token_header: bool = True
             task = progress.add_task("Building", total=len(stages))
             def on_stage(name: str) -> None:
                 progress.update(task, description=name, advance=1)
-            result = build_agent(token=token, on_stage=on_stage, output_name=output_name,
+            result = build_agent(on_stage=on_stage, output_name=output_name,
                                  install_to_appdata=install_appdata, enable_autostart=autostart,
                                  prefix=prefix)
     except (InterruptedError, KeyboardInterrupt):
@@ -392,25 +382,15 @@ def run_generate(console: Console, enabled: bool, show_token_header: bool = True
 
 
 def run_start(console: Console, enabled: bool) -> str | None:
-    """Start the agent with a freshly entered token. Returns 'exit' when the user quits."""
+    """Start Agent plus explicitly requested Host using local credential store."""
     import asyncio
 
-    from astral_remote.agent.secure_input import prompt_for_token
     from astral_remote.shared.config import default_runtime_config
-
-    try:
-        token = prompt_for_token()
-    except InterruptedError:
-        # Token entry cancelled with q or Ctrl+C: back to menu, not exit.
-        return None
-    except (OSError, ValueError) as err:
-        console.print(status_panel("warn", str(err), enabled))
-        return None
     try:
         from astral_remote.agent.app import run_agent
 
         async def _run() -> None:
-            await run_agent(token, default_runtime_config())
+            await run_agent(None, default_runtime_config())
             await asyncio.Event().wait()
 
         asyncio.run(_run())

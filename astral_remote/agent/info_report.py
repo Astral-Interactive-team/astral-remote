@@ -9,6 +9,11 @@
 #   ## <group>                                          message topic
 #   ### <section>                                       topic section
 #   **Label:** value / **Item n: name** / - bullet       detail lines
+#   > `value`                                           highlighted identity
+# The Overview opens with a connection banner before its first section heading,
+# so the live gateway state is the most prominent fact in the report. IP
+# addresses and other identifiers use inline code; only identity-worthy values
+# such as the IPs are also quoted.
 # Discord exposes only three heading levels, so individual GPUs, memory
 # modules, and network adapters use bold item headers instead of a fourth
 # level. Every message always opens with its title and its group heading, so
@@ -61,6 +66,33 @@ WARN_PERCENT = 80.0
 CRITICAL_PERCENT = 90.0
 _LEVEL_RANK = {None: 0, "warning": 1, "critical": 2}
 LEVEL_COLOURS = {"warning": 0xE67E22, "critical": 0xE74C3C}
+LEVEL_ICONS = {
+    "healthy": "\U0001F7E2",
+    "warning": "\U0001F7E1",
+    "critical": "\U0001F534",
+}
+
+# Connection vocabulary. The icon always accompanies the word, so a colour
+# alone never carries the state and an unconfirmed state is never rendered as
+# Connected.
+CONNECTION_ICONS = {
+    "Connected": "\U0001F7E2",
+    "Disconnected": "\U0001F534",
+    "Unknown": "\U0001F7E1",
+}
+_CONNECTION_ALIASES = {
+    "online": "Connected",
+    "offline": "Disconnected",
+    "unknown": "Unknown",
+    "unavailable": "Unknown",
+}
+_HEALTH_ICONS = {
+    "healthy": "\U0001F7E2",
+    "warning": "\U0001F7E1",
+    "degraded": "\U0001F7E1",
+    "unhealthy": "\U0001F534",
+    "critical": "\U0001F534",
+}
 
 # Discord limits: 4000 display characters and 40 components per message. The
 # container itself counts as one component, and the published budgets leave a
@@ -102,12 +134,17 @@ class Block:
 
 @dataclass(frozen=True, eq=False)
 class Topic:
-    """One report section: a group, a section title, and its display lines."""
+    """One report section: a group, a section title, and its display lines.
+
+    `heading` is False only for a preamble that belongs directly under the
+    group heading, such as the Overview connection banner.
+    """
 
     group: str
     title: str
     lines: list[str]
     level: str | None = None
+    heading: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +164,50 @@ def _plain(value) -> str:
     if value is None or (isinstance(value, str) and not value.strip()):
         return UNAVAILABLE
     return str(value)
+
+
+def _code(value) -> str:
+    """Inline-code an identifier, leaving explicit absence markers plain."""
+    text = _plain(value)
+    if text in (UNAVAILABLE, NOT_SUPPORTED):
+        return text
+    return f"`{text}`"
+
+
+def _code_field(label: str, value) -> str:
+    """Render a label with an identifier-like value in inline code."""
+    return _field(label, _code(value))
+
+
+def _quote_field(label: str, value) -> str:
+    """Render a label followed by a quoted value, used for IP addresses."""
+    text = _plain(value)
+    quoted = f"> {text}" if text in (UNAVAILABLE, NOT_SUPPORTED) else f"> `{text}`"
+    return f"**{label}**\n{quoted}"
+
+
+def _connection(value) -> str:
+    """Render a gateway state with its status icon, mapping legacy words."""
+    text = _plain(value)
+    text = _CONNECTION_ALIASES.get(text.lower(), text)
+    icon = CONNECTION_ICONS.get(text)
+    return f"{icon} {text}" if icon else text
+
+
+def _connection_badge(value) -> str:
+    """Render the Overview connection banner, never inventing a connection."""
+    text = _plain(value)
+    text = _CONNECTION_ALIASES.get(text.lower(), text)
+    if text not in CONNECTION_ICONS:
+        text = "Unknown"
+    return f"{CONNECTION_ICONS[text]} **Connection: {text}**"
+
+
+def _health(value) -> str:
+    """Prefix a reported disk health state with a matching status icon."""
+    text = _plain(value)
+    icon = _HEALTH_ICONS.get(text.lower())
+    return f"{icon} {text}" if icon else text
 
 
 def _number(text):
@@ -160,13 +241,15 @@ def _worst_level(*levels):
 
 
 def _level_suffix(percent) -> str:
-    """Annotate a measurement in words when it runs high."""
+    """Annotate a measured utilization with its status word and icon."""
+    if percent is None:
+        return ""
     level = _usage_level(percent)
     if level == "critical":
-        return " - Critical"
+        return f" - {LEVEL_ICONS['critical']} **Critical**"
     if level == "warning":
-        return " - High"
-    return ""
+        return f" - {LEVEL_ICONS['warning']} **High**"
+    return f" - {LEVEL_ICONS['healthy']} **Healthy**"
 
 
 def _memory_usage_text(memory: dict) -> str:
@@ -190,11 +273,11 @@ def _inferred(value) -> str:
 
 
 def _device(value) -> str:
-    """Render a drive letter or mount point without its trailing separator."""
+    """Render a drive letter or mount point without a trailing separator."""
     text = _plain(value)
     if text == UNAVAILABLE:
         return text
-    return text.strip().rstrip(":\\")
+    return text.strip().rstrip("\\/")
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +286,7 @@ def _device(value) -> str:
 
 
 def _overview_topics(inventory: dict) -> list[Topic]:
-    """Build the Overview dashboard: identity, status, and headline numbers."""
+    """Build the Overview dashboard: connection, identity, and headline numbers."""
     identity = inventory.get("identity") or {}
     cpu = inventory.get("cpu") or {}
     memory = inventory.get("memory") or {}
@@ -211,32 +294,40 @@ def _overview_topics(inventory: dict) -> list[Topic]:
 
     cpu_percent = _number(cpu.get("utilization"))
     memory_percent = _number(memory.get("usagePercent"))
-    utilization = [
-        _field("CPU utilization", f"{_plain(cpu.get('utilization'))}{_level_suffix(cpu_percent)}"),
-        _field(
-            "Memory usage",
-            f"{_memory_usage_text(memory)}{_level_suffix(memory_percent)}",
-        ),
-    ]
     storage_lines, storage_level = _overview_storage(storage)
-
+    # `connection` is the current field; `agentStatus` keeps reports built by
+    # older collectors readable without inventing a live state.
+    connection = identity.get("connection") or identity.get("agentStatus")
     return [
+        # No section heading: the banner sits directly under the Overview
+        # heading, where it is the first and most prominent fact.
+        Topic(GROUP_OVERVIEW, "Connection", [_connection_badge(connection)],
+              heading=False),
         Topic(GROUP_OVERVIEW, "Machine", [
-            _field("Hostname", identity.get("hostname")),
-            _field("Installation ID", identity.get("installationId")),
-            _field("Local IPv4", identity.get("localIpv4")),
-            _field("Public IPv4", identity.get("publicIpv4")),
+            _code_field("Hostname", identity.get("hostname")),
+            _code_field("Installation ID", identity.get("installationId")),
         ]),
-        Topic(GROUP_OVERVIEW, "System", [
-            _field("Agent status", identity.get("agentStatus")),
-            _field("Operating system", identity.get("osName")),
-            _field("OS version / build", identity.get("osVersion")),
-            _field("Agent version", identity.get("agentVersion")),
-            _field("Last updated", identity.get("lastUpdated")),
+        Topic(GROUP_OVERVIEW, "Network Identity", [
+            _quote_field("Local IPv4", identity.get("localIpv4")),
+            "",
+            _quote_field("Public IPv4", identity.get("publicIpv4")),
         ]),
-        Topic(GROUP_OVERVIEW, "Utilization", utilization,
-              level=_worst_level(_usage_level(cpu_percent), _usage_level(memory_percent))),
-        Topic(GROUP_OVERVIEW, "Storage", storage_lines, level=storage_level),
+        Topic(GROUP_OVERVIEW, "System Summary", [
+            _field("Operating System", identity.get("osName")),
+            _field("OS Version / Build", identity.get("osVersion")),
+            _code_field("Agent Version", identity.get("agentVersion")),
+            _field(
+                "CPU Utilization",
+                f"{_plain(cpu.get('utilization'))}{_level_suffix(cpu_percent)}",
+            ),
+            _field(
+                "Memory Usage",
+                f"{_memory_usage_text(memory)}{_level_suffix(memory_percent)}",
+            ),
+            _field("Last Updated", identity.get("lastUpdated")),
+        ]),
+        Topic(GROUP_OVERVIEW, "Storage", storage_lines,
+              level=storage_level),
     ]
 
 
@@ -263,7 +354,7 @@ def _overview_storage(storage: dict) -> tuple[list[str], str | None]:
         percent = drive.get("percentValue")
         level = _worst_level(level, _usage_level(percent))
         lines.append(
-            f"- **{_device(drive.get('device'))}:** {_plain(drive.get('usedPercent'))} used | "
+            f"- **{_code(_device(drive.get('device')))}** {_plain(drive.get('usedPercent'))} used | "
             f"{_plain(drive.get('free'))} free of {_plain(drive.get('total'))}"
             f"{_level_suffix(percent)}"
         )
@@ -271,14 +362,14 @@ def _overview_storage(storage: dict) -> tuple[list[str], str | None]:
         lines.append(
             "- **Other volumes:** "
             + ", ".join(
-                f"{_plain(drive.get('device'))} ({_plain(drive.get('type'))})"
+                f"{_code(_device(drive.get('device')))} ({_plain(drive.get('type'))})"
                 for drive in others
             )
         )
     for disk in physical:
         lines.append(
             f"- **Physical disk:** {_plain(disk.get('model'))} | "
-            f"health {_plain(disk.get('health'))} | state {_plain(disk.get('operational'))}"
+            f"health {_health(disk.get('health'))} | state {_plain(disk.get('operational'))}"
         )
     if not lines:
         lines.append(_field("Storage", UNAVAILABLE))
@@ -307,7 +398,7 @@ def _windows_topics(os_info: dict) -> list[Topic]:
         Topic(GROUP_WINDOWS, "Windows Registration", [
             _field("Registered owner", os_info.get("registeredOwner")),
             _field("Registered organization", os_info.get("registeredOrganization")),
-            _field("Windows product ID", os_info.get("productId")),
+            _code_field("Windows product ID", os_info.get("productId")),
             _field("Original install date", os_info.get("originalInstallDate")),
         ]),
         Topic(GROUP_WINDOWS, "Runtime", [
@@ -342,7 +433,7 @@ def _compute_topics(cpu: dict, memory: dict) -> list[Topic]:
         _field("CPU temperature", cpu.get("temperature")),
         _field("Manufacturer", cpu.get("manufacturer")),
         _field("Model", cpu.get("model")),
-        _field("Identifier", cpu.get("identifier")),
+        _code_field("Identifier", cpu.get("identifier")),
         _field("Architecture", cpu.get("architecture")),
         _field("Physical cores", cpu.get("physicalCores")),
         _field("Logical processors", cpu.get("logicalProcessors")),
@@ -473,7 +564,7 @@ def _storage_topics(storage: dict) -> list[Topic]:
     for drive in logical:
         if not drive.get("fixed"):
             continue
-        volumes.append(f"- **{_device(drive.get('device'))}:** {_plain(drive.get('type'))} | "
+        volumes.append(f"- **{_code(_device(drive.get('device')))}** {_plain(drive.get('type'))} | "
                        f"{_plain(drive.get('fileSystem'))} | label {_plain(drive.get('label'))}")
         volumes.append(
             f"  total {_plain(drive.get('total'))} | used {_plain(drive.get('used'))} "
@@ -486,7 +577,7 @@ def _storage_topics(storage: dict) -> list[Topic]:
         volumes.append(
             "- **Other volumes:** "
             + ", ".join(
-                f"{_plain(drive.get('device'))} ({_plain(drive.get('type'))}, "
+                f"{_code(_device(drive.get('device')))} ({_plain(drive.get('type'))}, "
                 f"{_plain(drive.get('fileSystem'))})"
                 for drive in others
             )
@@ -499,7 +590,7 @@ def _storage_topics(storage: dict) -> list[Topic]:
         drives.append(f"- **{_plain(disk.get('model'))}:** {_plain(disk.get('mediaType'))} | "
                       f"{_plain(disk.get('interface'))}")
         drives.append(
-            f"  capacity {_plain(disk.get('size'))} | health {_plain(disk.get('health'))} | "
+            f"  capacity {_plain(disk.get('size'))} | health {_health(disk.get('health'))} | "
             f"state {_plain(disk.get('operational'))} | temp {_plain(disk.get('temperature'))} | "
             f"wear {_plain(disk.get('wear'))}"
         )
@@ -509,7 +600,7 @@ def _storage_topics(storage: dict) -> list[Topic]:
         encryption.append(_field("BitLocker volumes", UNAVAILABLE))
     for volume in bitlocker:
         encryption.append(
-            f"- **{_device(volume.get('mountPoint'))}:** protection {_plain(volume.get('protection'))} | "
+            f"- **{_code(_device(volume.get('mountPoint')))}** protection {_plain(volume.get('protection'))} | "
             f"{_plain(volume.get('status'))} | {_plain(volume.get('encryption'))} | "
             f"{_plain(volume.get('percent'))}"
         )
@@ -531,9 +622,9 @@ def _network_topics(network: dict, power: dict) -> list[Topic]:
     adapters = network.get("adapters") or []
     summary = [
         _field("Internet connectivity", network.get("internetConnectivity")),
-        _field("Public IPv4", network.get("publicIpv4")),
+        _quote_field("Public IPv4", network.get("publicIpv4")),
         _field("Network adapter count", str(len(adapters)) if adapters else UNAVAILABLE),
-        _field("Discord gateway connection", network.get("discordConnection")),
+        _field("Discord gateway connection", _connection(network.get("discordConnection"))),
         _field("Discord gateway latency", network.get("discordLatency")),
     ]
     details: list[str] = []
@@ -545,14 +636,14 @@ def _network_topics(network: dict, power: dict) -> list[Topic]:
         details.extend([
             f"**Adapter {index}: {_plain(adapter.get('name'))} - {_adapter_kind(adapter)}**",
             _field("Description", adapter.get("description")),
-            _field("IPv4", adapter.get("ipv4")),
-            _field("IPv6", adapter.get("ipv6")),
-            _field("Subnet mask", adapter.get("subnet")),
-            _field("Default gateway", adapter.get("gateway")),
-            _field("DNS servers", adapter.get("dns")),
+            _code_field("IPv4", adapter.get("ipv4")),
+            _code_field("IPv6", adapter.get("ipv6")),
+            _code_field("Subnet mask", adapter.get("subnet")),
+            _code_field("Default gateway", adapter.get("gateway")),
+            _code_field("DNS servers", adapter.get("dns")),
             f"**DHCP:** {_plain(adapter.get('dhcpEnabled'))} | "
-            f"**DHCP server:** {_plain(adapter.get('dhcpServer'))}",
-            _field("MAC address", adapter.get("mac")),
+            f"**DHCP server:** {_code(adapter.get('dhcpServer'))}",
+            _code_field("MAC address", adapter.get("mac")),
             _field("Link speed", adapter.get("linkSpeed")),
             f"**Received:** {_plain(adapter.get('received'))} | "
             f"**Sent:** {_plain(adapter.get('sent'))}",
@@ -646,9 +737,9 @@ def _agent_topics(performance: dict, agent: dict, environment: dict) -> list[Top
         ]),
         Topic(GROUP_AGENT, "Astral Remote Agent", [
             _field("Agent version", agent.get("version")),
-            _field("Installation ID", agent.get("installationId")),
+            _code_field("Installation ID", agent.get("installationId")),
             _field("Agent uptime", agent.get("uptime")),
-            _field("Discord connection", agent.get("connection")),
+            _field("Discord connection", _connection(agent.get("connection"))),
             _field("Discord latency", agent.get("latency")),
             _field("Reconnect count", agent.get("reconnectCount")),
             _field("Last successful update", agent.get("lastUpdate")),
@@ -662,8 +753,8 @@ def _agent_topics(performance: dict, agent: dict, environment: dict) -> list[Top
         ]),
         Topic(GROUP_AGENT, "Agent Environment", [
             _field("Environment collection", environment.get("environmentStatus")),
-            _field("Agent state directory", environment.get("stateDirectory")),
-            _field("Diagnostic log", environment.get("diagnosticLog")),
+            _code_field("Agent state directory", environment.get("stateDirectory")),
+            _code_field("Diagnostic log", environment.get("diagnosticLog")),
         ]),
     ]
 
@@ -726,11 +817,19 @@ def _topic_block(topic: Topic, lines: list[str], first: bool) -> Block:
     and never repeated inside or across messages.
     """
     body = "\n".join(lines)
-    if first:
+    if first and topic.heading:
         return Block(
             text=f"### {topic.title}\n{body}",
             group=topic.group,
             heading=True,
+            section=topic.title,
+            level=topic.level,
+        )
+    if first:
+        return Block(
+            text=body,
+            group=topic.group,
+            heading=False,
             section=topic.title,
             level=topic.level,
         )

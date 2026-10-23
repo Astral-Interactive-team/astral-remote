@@ -235,7 +235,7 @@ def test_identity_prefers_injected_agent_facts(stub_probes):
     identity = collect()["identity"]
     assert identity["hostname"] == "DESKTOP-TEST"
     assert identity["installationId"] == "0123456789abcdef"
-    assert identity["agentStatus"] == "ONLINE"
+    assert identity["agentStatus"] == "Connected"
     assert identity["agentVersion"] == "0.1.0"
     assert identity["osName"] == "Microsoft Windows 11 Pro"
     assert identity["osVersion"].startswith("10.0.22631")
@@ -246,9 +246,17 @@ def test_identity_prefers_injected_agent_facts(stub_probes):
     assert "pid" not in identity
 
 
-def test_offline_agent_reports_unknown_status(stub_probes):
+def test_offline_agent_reports_disconnected_status(stub_probes):
     identity = collect(agent=dict(AGENT, connected=False))["identity"]
-    assert identity["agentStatus"] == "UNKNOWN"
+    assert identity["agentStatus"] == "Disconnected"
+
+
+def test_unknown_agent_state_is_not_reported_as_connected(stub_probes):
+    agent = {key: value for key, value in AGENT.items() if key != "connected"}
+    data = collect(agent=agent)
+    assert data["identity"]["agentStatus"] == "Unknown"
+    assert data["network"]["discordConnection"] == "Unknown"
+    assert data["agent"]["connection"] == "Unknown"
 
 
 def test_os_section_renders_cim_values(stub_probes):
@@ -374,6 +382,7 @@ def test_network_section_lists_adapters_up_first(stub_probes):
     assert network["publicIpv4"] == "203.0.113.9"
     assert network["discordConnection"] == "Connected"
     assert network["discordLatency"] == "42 ms"
+    assert collect(agent=dict(AGENT, connected=False))["network"]["discordConnection"] == "Disconnected"
 
 
 def test_network_section_reports_lookup_failure_without_faking(stub_probes, monkeypatch):
@@ -503,7 +512,7 @@ def test_missing_cim_data_degrades_to_unavailable(stub_probes):
     # A missing Confirm-SecureBootUEFI result is not reported as "No".
     assert data["board"]["secureBoot"] == inv.UNAVAILABLE
     assert data["power"]["powerPlan"] == inv.UNAVAILABLE
-    assert data["identity"]["agentStatus"] == "ONLINE"
+    assert data["identity"]["agentStatus"] == "Connected"
 
 
 def test_inventory_never_carries_secret_shaped_fields(stub_probes):

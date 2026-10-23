@@ -18,6 +18,7 @@ pluggy==1.6.0
 propcache==0.5.4
 Pygments==2.21.0
 pyinstaller==6.15.0
+cryptography>=44,<46
 pyinstaller-hooks-contrib==2026.8
 pytest==8.3.4
 pywin32-ctypes==0.2.3

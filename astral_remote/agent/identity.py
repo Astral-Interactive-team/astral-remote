@@ -3,9 +3,12 @@
 # %LOCALAPPDATA%\AstralRemote\identity.json so the same installation keeps
 # the same identity across restarts. The file also remembers the Discord
 # category this installation manages in each guild (plus the managed #info
-# channel, the managed #main channel, and the ordered IDs of the
-# Components V2 report messages posted in #info), so a fresh process can
-# refresh the exact objects instead of searching by display name alone.
+# channel, the managed #main channel, the ordered IDs of the Components V2
+# report messages posted in #info, and the reusable device registration and
+# heartbeat message IDs), and the server-wide control category with its
+# #main channel, so a fresh process can refresh the exact objects instead
+# of searching by display name alone. The legacy control #logs channel ID
+# is retained when present but is no longer created.
 # On first load the pre-rename %LOCALAPPDATA%\AstralRelay\identity.json is
 # copied into the new directory when no new file exists yet, so an upgrade
 # keeps its installation ID and does not post a duplicate category.
@@ -80,11 +83,25 @@ def _normalize(raw) -> dict:
             if not isinstance(value, dict):
                 continue
             category_id = value.get("categoryId")
-            if isinstance(category_id, bool) or not isinstance(category_id, int):
+            control_category_id = value.get("controlCategoryId")
+            has_category = isinstance(category_id, int) and not isinstance(category_id, bool)
+            has_control_category = isinstance(control_category_id, int) and not isinstance(control_category_id, bool)
+            if not has_category and not has_control_category:
                 continue
             name = value.get("name") if isinstance(value.get("name"), str) else ""
-            record = {"categoryId": category_id, "name": name}
-            for extra in ("infoChannelId", "mainChannelId", "infoMessageId"):
+            record = {"name": name}
+            if has_category:
+                record["categoryId"] = category_id
+            for extra in (
+                "infoChannelId",
+                "mainChannelId",
+                "infoMessageId",
+                "controlCategoryId",
+                "controlMainChannelId",
+                "controlLogsChannelId",
+                "deviceMessageId",
+                "heartbeatMessageId",
+            ):
                 number = value.get(extra)
                 if isinstance(number, int) and not isinstance(number, bool):
                     record[extra] = number
@@ -140,9 +157,11 @@ class StateStore:
     """In-memory view of the persisted state with write-through saves.
 
     Generates the installation ID lazily on first use and remembers one
-    managed category plus the managed #info and #main channels and the
-    report message IDs per guild. Reads and writes are fault-tolerant, so
-    a missing or unwritable state file never breaks the agent.
+    managed host category plus the managed #info and #main channels and the
+    report message IDs per guild. It also remembers the server-wide control
+    category and its #main and #logs channels. Reads and writes are
+    fault-tolerant, so a missing or unwritable state file never breaks the
+    agent.
     """
 
     def __init__(self, path=None, env=None):
@@ -179,6 +198,36 @@ class StateStore:
         """Return the remembered managed #main channel ID for a guild, or None."""
         record = self._record(guild_id)
         return record.get("mainChannelId") if record else None
+
+    def control_category_id(self, guild_id) -> int | None:
+        """Return the remembered server-wide control category ID, or None."""
+        record = self._record(guild_id)
+        return record.get("controlCategoryId") if record else None
+
+    def control_main_channel_id(self, guild_id) -> int | None:
+        """Return the remembered control #main channel ID, or None."""
+        record = self._record(guild_id)
+        return record.get("controlMainChannelId") if record else None
+
+    def control_logs_channel_id(self, guild_id) -> int | None:
+        """Return the remembered control #logs channel ID, or None.
+
+        Older builds created #logs. The field is read only so that an
+        upgrade can preserve the existing channel ID without creating a
+        new logging channel of its own.
+        """
+        record = self._record(guild_id)
+        return record.get("controlLogsChannelId") if record else None
+
+    def device_message_id(self, guild_id) -> int | None:
+        """Return the remembered shared device-registration message ID."""
+        record = self._record(guild_id)
+        return record.get("deviceMessageId") if record else None
+
+    def heartbeat_message_id(self, guild_id) -> int | None:
+        """Return the remembered per-computer heartbeat message ID."""
+        record = self._record(guild_id)
+        return record.get("heartbeatMessageId") if record else None
 
     def info_message_id(self, guild_id) -> int | None:
         """Return the single legacy report message ID for a guild, or None."""
@@ -234,6 +283,18 @@ class StateStore:
             record["mainChannelId"] = int(channel_id)
         self.save()
 
+    def remember_control(self, guild_id, category_id=None, main_channel_id=None,
+                         logs_channel_id=None) -> None:
+        """Persist the server-wide control category and channel IDs."""
+        record = self._guild_record(guild_id)
+        if category_id is not None:
+            record["controlCategoryId"] = int(category_id)
+        if main_channel_id is not None:
+            record["controlMainChannelId"] = int(main_channel_id)
+        if logs_channel_id is not None:
+            record["controlLogsChannelId"] = int(logs_channel_id)
+        self.save()
+
     def remember_info_messages(self, guild_id, message_ids) -> None:
         """Persist the ordered report message IDs, replacing earlier shapes.
 
@@ -251,6 +312,20 @@ class StateStore:
         else:
             record.pop("infoMessages", None)
         record.pop("infoMessageId", None)
+        self.save()
+
+    def remember_device_message(self, guild_id, message_id=None) -> None:
+        """Persist the reusable shared device-registration message ID."""
+        record = self._guild_record(guild_id)
+        if message_id is not None:
+            record["deviceMessageId"] = int(message_id)
+        self.save()
+
+    def remember_heartbeat_message(self, guild_id, message_id=None) -> None:
+        """Persist the reusable per-computer heartbeat message ID."""
+        record = self._guild_record(guild_id)
+        if message_id is not None:
+            record["heartbeatMessageId"] = int(message_id)
         self.save()
 
     def save(self) -> bool:

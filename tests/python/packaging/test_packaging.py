@@ -10,8 +10,6 @@ pytestmark = pytest.mark.skipif(
     reason="packaging runs only with ASTRAL_RUN_PACKAGING=1",
 )
 
-from tests.python.unit.test_payload import TOKEN_A
-
 
 def test_pyinstaller_onefile_smoke(tmp_path):
     import astral_remote.builder.build as build_mod
@@ -20,8 +18,11 @@ def test_pyinstaller_onefile_smoke(tmp_path):
     build_mod.DIST_DIR = tmp_path
     build_mod.OUTPUT_EXE = monkeypatch_exe
     build_mod.BUILD_TMP = tmp_path / "build-tmp"
-    result = build_mod.build_agent(token=TOKEN_A)
+    result = build_mod.build_agent()
     assert monkeypatch_exe.exists()
+    payload = monkeypatch_exe.read_bytes()
+    assert b"TOKEN =" not in payload
+    assert b"botToken" not in payload
     assert "AstralRemote-Agent" in result["version_line"]
     from astral_remote.builder.subsystem import read_subsystem
     from astral_remote.builder.subsystem import IMAGE_SUBSYSTEM_WINDOWS_GUI

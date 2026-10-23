@@ -36,7 +36,7 @@ def test_self_test_missing_payload(monkeypatch):
     assert handle_self_test(["--self-test"]) == EXIT_NO_PAYLOAD
 
 
-def test_self_test_invalid_token_shape(monkeypatch):
+def test_self_test_ignores_legacy_embedded_token(monkeypatch):
     import types
 
     module = types.ModuleType("astral_remote._embedded_payload")
@@ -46,7 +46,7 @@ def test_self_test_invalid_token_shape(monkeypatch):
 
     module.CONFIG = default_runtime_config()
     monkeypatch.setitem(sys.modules, "astral_remote._embedded_payload", module)
-    assert handle_self_test(["--self-test"]) == EXIT_BAD_TOKEN
+    assert handle_self_test(["--self-test"]) == EXIT_OK
 
 
 def test_self_test_ok_with_valid_payload(monkeypatch, tmp_path):

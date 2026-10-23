@@ -23,7 +23,7 @@
 > [!CAUTION]
 > **Experimental software.** Use only on computers you own or are explicitly authorized to administer.
 >
-> The current production build embeds the Discord bot token in the executable as recoverable data. Anyone who obtains the EXE may be able to extract the token. Do not distribute a token-bearing executable to untrusted recipients.
+> Builds contain no Discord bot token. Configure each eligible Host PC locally with `astral-remote credentials set` before starting Host work.
 
 ## Overview
 
@@ -48,17 +48,17 @@ The startup banner is stored in `astral_remote/cli/banner.txt`. The development 
 
 ### Discord Agent
 
-The Agent connects to Discord with one read-only prefix command, `status`, available only in its managed `#main` channel; it registers no slash commands and no command tree. Its Discord work is to create or adopt its managed per-computer category with its `#info` and `#main` channels, publish the read-only system report to the managed `#info` channel, keep that channel clean by deleting member messages posted there, and answer `status` in `#main` with a short summary for that category's computer.
+The Agent connects to Discord with one read-only prefix command, `status`, available only in its managed host `#main` channel; it registers no slash commands and no command tree. Its Discord work is to create or adopt its managed per-computer category with its `#info` and `#main` channels, ensure the server-wide `control` category with its `#main` and `#logs` channels, publish the read-only system report to the managed `#info` channel, keep that channel clean by deleting member messages posted there, and answer `status` in the host `#main` with a short summary for that category's computer.
 
 ### System Information Dashboard
 
 Each managed computer publishes a full system report to its managed `#info` channel using Discord **Components V2**. The report is read-only and is organized into a fixed set of topical messages, in this order: **Overview** (always first), **Windows & Operating System**, **Processor & Memory**, **Graphics & Firmware**, **Storage**, **Network & Power**, **Security & Updates**, and **Performance & Agent**. Each topic is published as its own message, so a reader can identify and open only the part they need; the topic heading is repeated at the top of every message, and a topic that outgrows one message continues in additional messages in order.
 
-The Overview is a dashboard rather than a duplicate of the detail messages: it carries the computer identity, the Agent status, the operating system and Agent versions, the last update time, and the headline CPU, memory, and per-drive usage figures. Only the fixed local drives are listed there, and removable, network, and optical volumes are grouped into one line; full capacity, file-system, and BitLocker detail stays in the Storage topic.
+The Overview is a dashboard rather than a duplicate of the detail messages: it opens with the live Discord connection banner (`🟢 Connected`, `🔴 Disconnected`, or `🟡 Unknown`), then carries the computer identity, OS and Agent versions, the last update time, and the headline CPU, memory, and per-drive usage figures. Local and public IPv4 appear as separate quoted, inline-code lines; a failed public lookup shows `Unavailable` and is never replaced with the local address. Only the fixed local drives are listed there, and removable, network, and optical volumes are grouped into one line; full capacity, file-system, and BitLocker detail stays in the Storage topic. The connection banner reflects the Discord Gateway link only, never a judgement that the whole PC is healthy.
 
 The report deliberately contains **no process inventory, no service inventory, and no installed-software inventory**. It never lists running programs, process IDs, per-process CPU or memory, Windows services, installed applications, or the default browser.
 
-There are no select menus, no pagination buttons, and no user-input controls. Every message opens with its title and position, `# Astral Remote — System Information (Part N of M)`, followed by its topic heading `## <topic>`. A topic that spans several messages simply repeats its heading; no continuation marker is ever printed, because the part number already carries the order. Nothing is summarized away or omitted, and facts the Agent cannot read are reported as `Unavailable` (or `Not supported` for features the platform does not expose) instead of being guessed. See [System Report](#system-report) for what is and is not collected.
+There are no select menus, no pagination buttons, and no user-input controls. Every message opens with its title and position, `# Astral Remote — System Information (Part N of M)`, followed by its topic heading `## <topic>`. A topic that spans several messages simply repeats its heading; no continuation marker is ever printed, because the part number already carries the order. Identifiers such as the installation ID, hostname, Agent version, drive letters, MAC address, and state paths use inline code, while only identity-worthy values such as the Overview IP addresses are quoted. Nothing is summarized away or omitted, and facts the Agent cannot read are reported as `Unavailable` (or `Not supported` for features the platform does not expose) instead of being guessed. See [System Report](#system-report) for what is and is not collected.
 
 ### Executable Builder
 
@@ -149,7 +149,7 @@ Generating an Agent (option `01`, or `python scripts/build_exe.py`) prompts for:
 
 | Prompt | Default | Effect |
 |:--|:--|:--|
-| Discord Bot Token | required | Embedded in the EXE as recoverable data. |
+| Discord Bot Token | required for Host only | Stored locally with current-user Windows DPAPI; never embedded in EXE. |
 | Output EXE name | `astral-remote.exe` | Published under `dist/`. |
 | Bot command prefix | `!` | Embedded in the EXE as `prefix` for the managed `#main` command channel. 1–8 characters, no spaces. |
 | Copy Agent into `%APPDATA%` | Yes | The EXE copies itself to `%APPDATA%\<name>\AstralRemote-Agent.exe` on launch so deleting the original keeps autostart working. |
@@ -191,7 +191,7 @@ dist/
 
 The builder publishes the new executable only after verification succeeds and preserves the previous output when a build fails.
 
-Each token-specific build currently requires a full PyInstaller rebuild, which can take several minutes.
+One EXE may be deployed to multiple PCs. Only PCs explicitly configured with a local Host credential can start Discord Host work.
 
 ## Discord Setup
 
@@ -204,7 +204,7 @@ Enable the intent in both:
 1. The Agent's Discord intent configuration.
 2. Discord Developer Portal → Application → Bot → Privileged Gateway Intents.
 
-The bot also needs **Manage Channels** to create the managed category and its `#info` and `#main` channels, and **Manage Messages** to clear member messages posted in `#info`.
+The bot also needs **Manage Channels** to create the managed host category and its `#info` and `#main` channels, the server-wide `control` category and its `#main` and `#logs` channels, and **Manage Messages** to clear member messages posted in `#info`.
 
 ### Commands
 
@@ -230,14 +230,26 @@ The Agent no longer ships a removal script. Remove old registrations manually fr
 
 ### Managed Categories
 
-Each Agent installation manages exactly one category per guild.
+Each Agent installation manages exactly one host category per guild, and ensures one shared `control` category per guild.
+
+#### Host category
+
+The host category is owned by one installation:
 
 - A random, non-secret **installation ID** is generated once and stored at `%LOCALAPPDATA%\AstralRemote\identity.json`, beside the sanitized error log. An existing `%LOCALAPPDATA%\AstralRelay\identity.json` from a pre-rename build is copied into the new directory on first start, so the installation ID, managed category, and report message IDs are kept instead of creating a duplicate category.
 - The category is named `<hostname> [<installation-id>]` and matched by that installation ID, so restarts, reconnects, and repeated `on_ready` events reuse the same category instead of creating more. The created category ID is remembered in the same file.
 - Missing `Manage Channels` permission or Discord API failures warn once and are not retried in a loop.
 - Categories left by older builds (`pc <hostname> (<host-id>)`) are adopted when unambiguous. Ambiguous or duplicate categories are reported to the file log and never deleted automatically.
 
-Channels are added to the managed category one at a time, starting with `#info`:
+#### Control category
+
+On every start the Agent also ensures exactly one server-wide `control` category per guild, independent of the host category. Control setup starts before host setup and runs in parallel with it, so the category appears while the first report is still being collected and published. It is matched by its remembered ID first and then by the exact category name `control`, so repeated starts and several Agents on the same server reuse it instead of creating duplicates.
+
+- The category is created when missing; `#main` and `#logs` are then added in that order. Existing channels with those names are adopted, and the category plus both channel IDs are remembered in `identity.json`.
+- These channels are scaffolding for later work: nothing is written to `#logs`, and the control `#main` accepts no commands yet. The host category's `#main` remains the `status` command channel.
+- The control channels are not refreshed, cleaned, or used for the system report.
+
+Channels are added to the host category one at a time, starting with `#info`:
 
 - The bot creates a single `#info` text channel inside the category and publishes this computer's full system report there using Discord **Components V2** (no embeds, no select menus, no pagination). The channel ID and the ordered report message IDs are remembered in `identity.json`, so later starts refresh the same messages instead of posting duplicates. While the Agent stays connected, the same messages are refreshed every 60 seconds, so utilization, uptime, and the `Last updated` timestamp stay current without adding new messages.
 - The bot then creates a single `#main` text channel directly below `#info`; its channel ID is remembered in the same file. `#main` is the operator command channel: it accepts `status`, while the Agent publishes nothing there and never deletes messages posted there. An existing `#main` channel in the category is adopted instead of duplicated. The command prefix is chosen at build time (default `!`) and stays embedded in the EXE as `prefix`.
@@ -245,8 +257,8 @@ Channels are added to the managed category one at a time, starting with `#info`:
 - Long lists are never summarized or truncated: every collected item is listed in full, and a list is split only at a section or item boundary, never mid-item.
 - Process, service, and installed-software inventories are not collected or shown at all.
 - Values the Agent genuinely cannot read are shown as `Unavailable`, and features the platform does not expose are shown as `Not supported`. No placeholder numbers are invented.
-- Utilization at or above 80% is marked `- High` and at or above 90% `- Critical`, in text and in the message accent colour together.
-- Member messages posted in `#info` are deleted immediately; `#main` accepts only the `status` command, and any other message there is ignored.
+- Utilization below 80% is marked `- 🟢 **Healthy**`, at or above 80% `- 🟡 **High**`, and at or above 90% `- 🔴 **Critical**`, in text, status icon, and the message accent colour together.
+- Member messages posted in `#info` are deleted immediately; the host `#main` accepts only the `status` command, and any other message there is ignored. The control `#main` and `#logs` are inert.
 
 ### System Report
 
@@ -257,7 +269,7 @@ The report is produced by two modules:
 
 Collected sections, in publication order:
 
-1. **Overview** — hostname, installation ID, local and public IPv4, Agent status and version, operating system and version, last update time, CPU utilization, memory usage, per-drive usage and free space, and disk health. Fixed local volumes are listed one by one; removable, network, and optical volumes are grouped into a single line.
+1. **Overview** — live Discord connection state, hostname, installation ID, local and public IPv4, operating system and version, Agent version, last update time, CPU utilization, memory usage, per-drive usage and free space, and disk health. Fixed local volumes are listed one by one; removable, network, and optical volumes are grouped into a single line.
 2. **Windows & Operating System** — edition and build (OS name, manufacturer, version, build number, feature update, edition, architecture, configuration, build type), Windows registration (registered owner and organization, Windows product ID, original install date), runtime (boot time, uptime, system and input locale, time zone), and domain and directories (domain/workgroup, domain joined, Windows and system directories, boot device, firmware architecture).
 3. **Processor & Memory** — CPU manufacturer, model, identifier, architecture, physical and logical core counts, maximum and current clock speed, L2/L3 cache, virtualization firmware support, SLAT, hypervisor presence, utilization, and temperature; then total, used, and available physical memory, usage percentage, total and available virtual memory, page file size and usage, module count, and one line per installed module.
 4. **Graphics & Firmware** — one bold block per graphics adapter (manufacturer, driver version and date, dedicated memory, resolution, refresh rate, HDR, adapter status) plus a single grouped `Monitoring: Not supported (...)` line naming each unsupported meter; then system and motherboard facts, BIOS version and release date, firmware mode, Secure Boot, and TPM availability, version, and firmware.
@@ -270,7 +282,7 @@ The layout uses only the three heading levels Discord renders: `#` for the messa
 
 Duplicate facts are kept in exactly one place: the Windows and system directories are reported once in the Windows & Operating System topic, the Secure Boot, TPM, and BitLocker details live in the firmware and storage topics with only a combined summary line under Security & Updates, and the Overview shows only the values whose full detail appears in a later topic.
 
-Utilization that runs high is marked in words and in the message accent colour together, never by colour alone: at 80% or above a value is suffixed `- High`, and at 90% or above `- Critical`, which also switches the message's container accent to amber or red. The default accent colour is the Astral Remote purple.
+Utilization is marked in words, a status icon, and the message accent colour together, never by colour alone: a measured value below 80% ends in `- 🟢 **Healthy**`, at 80% or above it ends in `- 🟡 **High**`, and at 90% or above in `- 🔴 **Critical**`, which also switches the message's container accent to amber or red. A measurement that cannot be read gets neither a number nor a status icon. Disk health uses the same vocabulary (`🟢 Healthy`, `🟡 Warning`, `🔴 Unhealthy`) and the default accent colour is the Astral Remote purple.
 
 The report collects **no process inventory, no service inventory, and no installed-software inventory**. Running programs, process IDs, per-process CPU or memory, Windows services, installed applications, Start Menu entry counts, and the default browser are neither read nor rendered.
 
@@ -294,15 +306,29 @@ Two fields are inferred rather than reported by Windows directly, and are docume
 ## Security
 
 > [!WARNING]
-> **The current executable contains a recoverable Discord bot token. Packaging is not encryption.**
+> **Current-user DPAPI protects local Host credentials; it does not protect a compromised process or Windows user account.**
 
-The token is embedded in the production payload. Anyone with access to the generated executable may be able to extract it.
+Build payload contains only non-secret configuration. `astral-remote credentials set` reads token with masked console input and writes `%LOCALAPPDATA%\AstralRemote\host-credential.json`; its content is DPAPI-encrypted for current Windows user. `credentials clear` removes it. A Host candidate without this local credential remains an Agent and Host start fails without a Discord connection.
+
+`astral-remote identity show` creates or displays local Ed25519 Node Identity. Private key is held in `%LOCALAPPDATA%\AstralRemote\node-identity.json` inside current-user DPAPI protected envelope; public key, `node-v1-<sha256>` identifier, key algorithm, and format versions are independent from legacy non-secret Installation ID in `identity.json`.
+
+Future peer enrollment must authenticate possession of Node Identity key, then record its public key in trust policy. Installation ID alone never establishes trust. This release has no peer handshake, discovery, automatic enrollment, or credential distribution.
+
+## Peer Network (Phase 03)
+
+`peerNetwork` is optional non-secret runtime configuration. It binds only configured address (default loopback), then attempts configured bootstrap peers. No default public peer exists.
+
+```json
+{"peerNetwork":{"enabled":true,"bindHost":"127.0.0.1","bindPort":9443,"bootstrapPeers":[{"nodeId":"node-v1-...","publicKey":"base64-ed25519-public-key","host":"192.0.2.10","port":9443,"protocolVersion":1}]}}
+```
+
+Each bootstrap key must also be registered in local `TrustStore`; address presence never grants trust. Transport is direct TLS 1.3 with signed Ed25519 nonce handshake bound to protocol/network/version and both session nonces. Unknown, revoked, malformed, replayed, or version-mismatched peers are rejected. No remote commands, token transport, auto-enrollment, peer discovery, HTTP/WebSocket API, DHT, NAT traversal, relay, UPnP, or firewall change exists in this phase. Direct TCP/TLS therefore needs reachable configured endpoints; NAT/Internet behavior is unverified.
 
 Recommended precautions:
 
 - Use a dedicated Discord bot with the minimum required permissions.
 - Never use a personal Discord account token.
-- Avoid distributing an executable containing a sensitive bot token.
+- Configure Host credentials separately on every authorized Host candidate.
 - Rotate the bot token if exposure is suspected.
 - Never commit credentials or sensitive local configuration to Git.
 - Review the Agent's automatic-start behavior before deployment.
@@ -336,12 +362,12 @@ Tests using mocks or test credentials do not prove that live Discord authenticat
 ## Known Limitations
 
 - Live Discord login and category/report publishing require integration testing.
-- Each token-specific build currently requires a full PyInstaller rebuild.
-- The embedded bot token can be extracted from the executable.
+- Existing token-bearing EXEs should be treated as exposed; rotate that Discord token and rebuild with current code.
 - Automatic-start behavior should be reviewed before wider deployment.
-- The system report is published only to managed `#info` channels; `status` in `#main` returns a short summary, not the full report.
+- The system report is published only to managed `#info` channels; `status` in the host `#main` returns a short summary, not the full report.
+- The server-wide `control` category and its `#main` and `#logs` channels are created at startup but have no command or logging behavior yet.
 - The report deliberately omits process, service, and installed-software inventories.
-- Utilization thresholds (`- High` at 80%, `- Critical` at 90%) and the matching accent colours are fixed constants, not user-configurable.
+- Utilization thresholds (`- 🟢 **Healthy**` below 80%, `- 🟡 **High**` at 80%, `- 🔴 **Critical**` at 90%) and the matching accent colours are fixed constants, not user-configurable.
 - Report updates happen when the Agent starts and every 60 seconds while it stays connected; deleting a report message makes the Agent repost it on the next refresh.
 - The `CREATE_NO_WINDOW` flags for helper processes are covered by unit tests, but their effect has not been observed live from a rebuilt `--noconsole` EXE.
 

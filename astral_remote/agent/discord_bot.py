@@ -4,17 +4,20 @@
 # application-command registration or synchronization. Discord work is to
 # create or adopt the managed per-computer category, publish the
 # Components V2 system report into the managed #info channel, keep that
-# channel clean, and answer the read-only `status` prefix command in the
-# managed #main channel with a plain code-block message.
+# channel clean, maintain the server-wide CONTROL category and its shared
+# device registry, and answer the read-only `status` and `device` prefix
+# commands with plain code-block messages.
 # #main is ensured directly below #info as the operator command channel,
 # so its messages are never deleted and the report is never published
-# there. on_message deletes member messages posted in a managed #info
-# channel so the report stays readable, and answers `status` in this
-# process's #main channels with the facts of that channel's category.
-# Bot messages and every other channel are ignored. on_resumed counts
-# gateway session resumes for the #info agent section. A background task
-# republishes the #info report every minute while the client is connected.
-# Command replies echo no user input, so no system detail leaks.
+# there. The host #main also holds one reusable heartbeat message per
+# installation. on_message deletes member messages posted in a managed
+# #info channel so the report stays readable, answers `status` in this
+# process's host #main channels, and answers administrator-only `device`
+# in the shared CONTROL #main. Bot messages and every other channel are
+# ignored. on_resumed counts gateway session resumes for the #info agent
+# section. A background task republishes the #info report and refreshes
+# the heartbeat every minute while the client is connected. Command
+# replies echo no user input, so no system detail leaks.
 
 from __future__ import annotations
 
@@ -22,7 +25,8 @@ import asyncio
 
 from astral_remote.shared.logging_utils import error, info, warn
 
-# How often the #info report is refreshed while the Agent stays connected.
+# How often the #info report and device heartbeat are refreshed while the
+# Agent stays connected.
 REFRESH_INTERVAL_SECONDS = 60
 
 
@@ -52,6 +56,64 @@ async def _refresh_loop(client, config: dict) -> None:
             await refresh_host_categories(client, config=config)
         except Exception:
             pass
+
+
+async def _answer_device(message, argument, prefix: str) -> None:
+    """Handle `device` in the shared CONTROL #main.
+
+    Permission is checked before the registry is read, so an unauthorized
+    member cannot learn the device list from the reply. The registry is
+    read from shared Discord messages; a read failure is reported as
+    unavailable, never as an empty registry. Each reply is plain fenced
+    code-block content that already fits Discord's message limit.
+    """
+    from astral_remote.agent import devices
+    from astral_remote.agent.channel_commands import (
+        device_query,
+        has_manage_guild_permission,
+    )
+    from astral_remote.agent.discord_setup import devices_for_channel
+
+    channel = getattr(message, "channel", None)
+    channel_id = getattr(channel, "id", None)
+    if not has_manage_guild_permission(message):
+        try:
+            await channel.send(devices.format_permission_denied())
+        except Exception as err:  # noqa: BLE001 - a denial may also fail
+            warn("Device permission reply failed.", {"channel": channel_id, "message": str(err)})
+        return
+    try:
+        records = await devices_for_channel(channel_id)
+    except Exception as err:  # noqa: BLE001 - treat read failure as unavailable
+        warn("Device registry read failed.", {"channel": channel_id, "message": str(err)})
+        try:
+            await channel.send(devices.format_registry_unavailable())
+        except Exception:  # noqa: BLE001 - a reply must never break the client
+            pass
+        return
+    if records is None:
+        return
+    query = device_query(argument)
+    if not query:
+        replies = devices.format_devices(records, prefix)
+    else:
+        kind, matches = devices.select_device(records, query)
+        if kind in ("exact", "prefix"):
+            replies = [devices.format_device_details(matches[0])]
+        elif kind == "ambiguous":
+            replies = [devices.format_ambiguous(matches)]
+        else:
+            replies = [devices.format_device_not_found()]
+    failed = 0
+    for content in replies:
+        try:
+            await channel.send(content)
+        except Exception as err:  # noqa: BLE001 - continue other parts
+            failed += 1
+            warn("Device reply failed.", {"channel": channel_id, "message": str(err)})
+    if failed:
+        warn("Device reply incomplete.", {"channel": channel_id, "failed": failed,
+                                          "parts": len(replies)})
 
 
 def build_bot(config: dict):
@@ -93,18 +155,23 @@ def build_bot(config: dict):
 
     @client.event
     async def on_message(message) -> None:
-        """Clean managed #info and answer commands in managed #main.
+        """Clean managed #info and answer commands in managed #main channels.
 
         #info is bot-owned, so member messages there are removed immediately
-        (when permitted). Managed #main channels accept the commands this
-        build allows (`status`) and answer with a plain code-block message
-        for that channel's own category. The prefix comes from the
-        build-time config; unknown commands, bot messages, and every other
-        channel are ignored.
+        (when permitted). Host #main accepts `status` and answers with that
+        computer's facts. The shared CONTROL #main accepts the
+        administrator-only `device` command and reads the server-wide
+        registry. The prefix comes from the build-time config; unknown
+        commands, bot messages, DMs, and every other channel are ignored.
         """
-        from astral_remote.agent.channel_commands import format_status, parse_command
+        from astral_remote.agent.channel_commands import (
+            format_status,
+            parse_argument,
+            parse_command,
+        )
         from astral_remote.agent.discord_setup import (
             commands_for_channel,
+            is_control_main_channel,
             is_info_channel,
             runtime_facts,
             status_for_channel,
@@ -117,6 +184,7 @@ def build_bot(config: dict):
         try:
             info_channel = is_info_channel(channel_id)
             commands = commands_for_channel(channel_id)
+            control_main = is_control_main_channel(channel_id)
         except Exception:
             return
         if info_channel:
@@ -128,8 +196,17 @@ def build_bot(config: dict):
         if not commands:
             return
         prefix = normalize_prefix((config or {}).get("prefix"))
-        command = parse_command(getattr(message, "content", None), prefix)
+        content = getattr(message, "content", None)
+        command = parse_command(content, prefix)
+        argument = parse_argument(content, prefix)
         if command not in commands:
+            return
+        if control_main:
+            if command == "device":
+                try:
+                    await _answer_device(message, argument, prefix)
+                except Exception as err:  # noqa: BLE001 - a reply must never break the client
+                    warn("Device command failed.", {"channel": channel_id, "message": str(err)})
             return
         if command != "status":
             return

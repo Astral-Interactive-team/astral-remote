@@ -21,7 +21,7 @@ def sample(**sections):
         "identity": {
             "hostname": "DESKTOP-TEST",
             "installationId": "abc123",
-            "agentStatus": "ONLINE",
+            "connection": "Connected",
             "agentVersion": "0.1.0",
             "lastUpdated": "2026-01-01 01:00:00",
         },
@@ -124,7 +124,7 @@ def test_overview_is_the_first_message_and_carries_headline_numbers():
         identity={
             "hostname": "DESKTOP-TEST",
             "installationId": "abc123",
-            "agentStatus": "ONLINE",
+            "connection": "Connected",
             "agentVersion": "0.1.0",
             "localIpv4": "192.168.1.20",
             "publicIpv4": "203.0.113.9",
@@ -148,25 +148,33 @@ def test_overview_is_the_first_message_and_carries_headline_numbers():
     _, pages = info_report.build_report(inventory)
     assert pages[0][0].group == "Overview"
     text = "\n".join(block.text for block in pages[0])
+    green = info_report.CONNECTION_ICONS["Connected"]
     for line in (
-        "**Agent status:** ONLINE",
-        "**Hostname:** DESKTOP-TEST",
-        "**Installation ID:** abc123",
-        "**Local IPv4:** 192.168.1.20",
-        "**Public IPv4:** 203.0.113.9",
-        "**Operating system:** Microsoft Windows 11 Pro",
-        "**OS version / build:** 10.0.22631",
-        "**Agent version:** 0.1.0",
-        "**Last updated:** 2026-01-01 01:00:00",
-        "**CPU utilization:** 12.5%",
-        "**Memory usage:** 45.0% (8.0 GB of 16.0 GB)",
-        "- **C:** 50.0% used | 232.9 GB free of 465.8 GB",
-        "- **Physical disk:** Contoso NVMe SSD | health Healthy | state OK",
+        f"{green} **Connection: Connected**",
+        "### Machine",
+        "**Hostname:** `DESKTOP-TEST`",
+        "**Installation ID:** `abc123`",
+        "### Network Identity",
+        "**Local IPv4**\n> `192.168.1.20`",
+        "**Public IPv4**\n> `203.0.113.9`",
+        "### System Summary",
+        "**Operating System:** Microsoft Windows 11 Pro",
+        "**OS Version / Build:** 10.0.22631",
+        "**Agent Version:** `0.1.0`",
+        "**CPU Utilization:** 12.5%",
+        "**Memory Usage:** 45.0% (8.0 GB of 16.0 GB)",
+        "**Last Updated:** 2026-01-01 01:00:00",
+        "- **`C:`** 50.0% used | 232.9 GB free of 465.8 GB",
+        "- **Physical disk:** Contoso NVMe SSD | "
+        f"health {info_report._health('Healthy')} | state OK",
     ):
         assert line in text
-    # The Overview is a dashboard, not a duplicate of the Storage message, so
-    # it shows usage, free space, and disk health only.
+    # The overview identifies the machine without repeating a superseded
+    # connection marker or the detailed storage message.
+    assert "ONLINE" not in text
     assert "File system" not in text
+    sections = [block.section for block in pages[0] if block.heading or block.section == "Connection"]
+    assert sections == ["Connection", "Machine", "Network Identity", "System Summary", "Storage"]
 
 
 def test_overview_groups_removable_volumes_instead_of_repeating_them():
@@ -181,8 +189,8 @@ def test_overview_groups_removable_volumes_instead_of_repeating_them():
         ],
     })
     text = inventory_text(inventory)
-    assert "- **C:** 50.0% used | 232.9 GB free of 465.8 GB" in text
-    assert "- **Other volumes:** D: (Removable), E: (CD-ROM)" in text
+    assert "- **`C:`** 50.0% used | 232.9 GB free of 465.8 GB" in text
+    assert "- **Other volumes:** `D:` (Removable), `E:` (CD-ROM)" in text
     _, pages = info_report.build_report(inventory)
     overview = "\n".join(block.text for block in pages[0])
     storage = "\n".join(
@@ -192,15 +200,16 @@ def test_overview_groups_removable_volumes_instead_of_repeating_them():
     # two places that lists them.
     assert overview.count("**Other volumes:**") == 1
     assert storage.count("**Other volumes:**") == 1
-    assert "E:" not in overview.replace("- **Other volumes:** D: (Removable), E: (CD-ROM)", "")
+    assert "E:" not in overview.replace("- **Other volumes:** `D:` (Removable), `E:` (CD-ROM)", "")
 
 
 def test_high_usage_is_marked_in_words_and_with_the_accent_colour():
     inventory = high_usage_inventory()
     text = inventory_text(inventory)
-    assert "**CPU utilization:** 92.0% - Critical" in text
-    assert "**Memory usage:** 95.0% (15.2 GB of 16.0 GB) - Critical" in text
-    assert "- **C:** 94.0% used | 27.9 GB free of 465.8 GB - Critical" in text
+    icon = info_report.LEVEL_ICONS["critical"]
+    assert f"**CPU Utilization:** 92.0% - {icon} **Critical**" in text
+    assert f"**Memory Usage:** 95.0% (15.2 GB of 16.0 GB) - {icon} **Critical**" in text
+    assert f"- **`C:`** 94.0% used | 27.9 GB free of 465.8 GB - {icon} **Critical**" in text
     _, pages = info_report.build_report(inventory)
     view = info_report.build_views([pages[0]])[0]
     container = view.to_components()[0]
@@ -216,10 +225,17 @@ def test_a_quiet_report_uses_the_default_accent_colour():
 
 def test_first_section_of_each_group_opens_with_a_heading():
     _, pages = info_report.build_report(sample())
-    for page in pages:
-        assert page[0].heading is True
-        assert page[0].text.startswith("### ")
-        assert page[0].section is not None
+    for index, page in enumerate(pages):
+        first = page[0]
+        assert first.section is not None
+        if first.group == "Overview" and index == 0:
+            # The Overview opens with the connection banner, before any
+            # section heading, so it is the first thing a reader sees.
+            assert first.heading is False
+            assert first.text.startswith(info_report.CONNECTION_ICONS["Connected"])
+        else:
+            assert first.heading is True
+            assert first.text.startswith("### ")
 
 
 def test_unknown_values_render_as_unavailable_not_placeholders():
@@ -228,12 +244,104 @@ def test_unknown_values_render_as_unavailable_not_placeholders():
     assert "**Graphics adapters:** Unavailable" in text
     assert "**Installed modules:** Unavailable" in text
     assert "**Pending updates:** Unavailable" in text
-    assert "**Public IPv4:** Unavailable" in text
-    assert "**CPU utilization:** Unavailable" in text
+    assert "**Local IPv4**\n> Unavailable" in text
+    assert "**Public IPv4**\n> Unavailable" in text
+    assert "**CPU Utilization:** Unavailable" in text
     assert "**Network adapters:** Unavailable" in text
     # A value the collector marked unsupported is passed through unchanged.
     support_text = inventory_text(sample(security={"pendingUpdates": "Not supported"}))
     assert "**Pending updates:** Not supported" in support_text
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("Connected", "Connected"),
+    ("Disconnected", "Disconnected"),
+    ("Unknown", "Unknown"),
+    (None, "Unknown"),
+    ("", "Unknown"),
+])
+def test_connection_banner_never_invents_a_confirmed_state(value, expected):
+    text = inventory_text(sample(identity={
+        "hostname": "HOST",
+        "installationId": "abc123",
+        "connection": value,
+    }))
+    icon = info_report.CONNECTION_ICONS[expected]
+    assert f"{icon} **Connection: {expected}**" in text
+
+
+def test_legacy_agent_status_words_are_mapped_without_leaking_online():
+    for legacy, expected in (("ONLINE", "Connected"), ("OFFLINE", "Disconnected")):
+        text = inventory_text(sample(identity={
+            "hostname": "HOST",
+            "installationId": "abc123",
+            "agentStatus": legacy,
+        }))
+        icon = info_report.CONNECTION_ICONS[expected]
+        assert f"{icon} **Connection: {expected}**" in text
+        assert "ONLINE" not in text
+
+
+def test_public_ipv4_is_never_replaced_by_the_local_address():
+    text = inventory_text(sample(identity={
+        "hostname": "HOST",
+        "installationId": "abc123",
+        "connection": "Connected",
+        "localIpv4": "192.168.1.20",
+        "publicIpv4": None,
+    }))
+    assert "**Local IPv4**\n> `192.168.1.20`" in text
+    assert "**Public IPv4**\n> Unavailable" in text
+
+
+def test_identifiers_and_drive_letters_use_inline_code():
+    inventory = sample(
+        identity={
+            "hostname": "HOST",
+            "installationId": "abc123",
+            "connection": "Connected",
+        },
+        os={"productId": "00330-80000-00000-AA000"},
+        cpu={"identifier": "CPU0"},
+        network={"adapters": [{
+            "name": "Ethernet", "status": "Up", "virtual": "No",
+            "ipv4": "192.168.1.20/24", "ipv6": "None",
+            "subnet": "255.255.255.0", "gateway": "192.168.1.1",
+            "dns": "192.168.1.1", "dhcpEnabled": "Yes",
+            "dhcpServer": "192.168.1.1", "mac": "AA-BB-CC-DD-EE-FF",
+        }]},
+        storage={"logical": [{
+            "device": "C:", "type": "Local disk", "fixed": True,
+            "usedPercent": "50.0%", "free": "1.0 GB", "total": "2.0 GB",
+            "percentValue": 50.0,
+        }]},
+        agent={"installationId": "abc123"},
+        environment={"stateDirectory": "C:\\State", "diagnosticLog": "C:\\State\\agent.log"},
+    )
+    text = inventory_text(inventory)
+    for value in (
+        "**Hostname:** `HOST`",
+        "**Installation ID:** `abc123`",
+        "**Windows product ID:** `00330-80000-00000-AA000`",
+        "**Identifier:** `CPU0`",
+        "**IPv4:** `192.168.1.20/24`",
+        "**MAC address:** `AA-BB-CC-DD-EE-FF`",
+        "**Agent state directory:** `C:\\State`",
+        "- **`C:`** 50.0% used | 1.0 GB free of 2.0 GB",
+    ):
+        assert value in text
+
+
+def test_status_icons_follow_only_measured_utilization():
+    warning = inventory_text(sample(cpu={"utilization": "85.0%"}))
+    assert (f"**CPU Utilization:** 85.0% - "
+            f"{info_report.LEVEL_ICONS['warning']} **High**") in warning
+    healthy = inventory_text(sample(cpu={"utilization": "12.5%"}))
+    assert (f"**CPU Utilization:** 12.5% - "
+            f"{info_report.LEVEL_ICONS['healthy']} **Healthy**") in healthy
+    unknown = inventory_text(sample())
+    assert "**CPU Utilization:** Unavailable" in unknown
+    assert "**CPU Utilization:** Unavailable -" not in unknown
 
 
 def test_gpu_monitoring_gaps_are_stated_once_per_adapter():

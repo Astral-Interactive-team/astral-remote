@@ -1,13 +1,14 @@
 # Prefix command parsing and the read-only `status` reply.
-# Managed #main channels accept `status`; the answer is scoped to the
+# Managed host #main channels accept `status`; the answer is scoped to the
 # computer whose managed category owns that channel, so a guild with
 # several managed categories gets a different status from each #main.
-# General command replies are plain channel messages whose content is one
-# fenced code block, so the labels and values line up in Discord's
-# monospace rendering with no Components V2 wrapper. The reply is built
-# from already collected agent facts: it changes no system state, echoes no
-# user input, and carries no token or other secret. #info accepts no
-# commands.
+# The server-wide CONTROL #main accepts the administrator-only `device`
+# command, whose read-only reply is built by devices.py from shared Discord
+# registry messages. General command replies are plain channel messages
+# whose content is one fenced code block, so the labels and values line up
+# in Discord's monospace rendering with no Components V2 wrapper. Replies
+# are built from already collected facts: they change no system state and
+# carry no token or other secret. #info accepts no commands.
 
 from __future__ import annotations
 
@@ -20,20 +21,69 @@ RULE = "━" * 28
 LABEL_WIDTH = 16
 
 
+def parse_invocation(content, prefix) -> tuple[str | None, str]:
+    """Return the lowercased command word and its unparsed argument text.
+
+    The prefix must match exactly; the command word itself is
+    case-insensitive. Only the first whitespace-separated argument is
+    meaningful to the `device` command, but the whole remainder is
+    returned so callers can decide what to do with extra words.
+    """
+    text = str(content or "").strip()
+    prefix = str(prefix or "")
+    if not text or not prefix or not text.startswith(prefix):
+        return None, ""
+    rest = text[len(prefix):].strip()
+    if not rest:
+        return None, ""
+    pieces = rest.split(None, 1)
+    command = pieces[0].lower()
+    argument = pieces[1].strip() if len(pieces) > 1 else ""
+    return command, argument
+
+
 def parse_command(content, prefix) -> str | None:
     """Return the lowercased command word after an exact prefix, or None.
 
     The prefix must match exactly; the command word itself is
     case-insensitive and any arguments after it are ignored.
     """
-    text = str(content or "").strip()
-    prefix = str(prefix or "")
-    if not text or not prefix or not text.startswith(prefix):
-        return None
-    rest = text[len(prefix):].strip()
-    if not rest:
-        return None
-    return rest.split()[0].lower()
+    command, _ = parse_invocation(content, prefix)
+    return command
+
+
+def parse_argument(content, prefix) -> str:
+    """Return the argument text after the command word, or an empty string."""
+    _, argument = parse_invocation(content, prefix)
+    return argument
+
+
+def device_query(argument) -> str:
+    """Return the first argument accepted by `!device <id>`."""
+    pieces = str(argument or "").split()
+    return pieces[0] if pieces else ""
+
+
+def has_manage_guild_permission(message) -> bool:
+    """True when the member may use the administrator-only device command.
+
+    Discord grants Manage Server to administrators, and the guild owner
+    always has it. A DM or an author object without guild permissions is
+    rejected rather than guessed as trusted.
+    """
+    author = getattr(message, "author", None)
+    guild = getattr(message, "guild", None)
+    author_id = getattr(author, "id", None)
+    owner_id = getattr(guild, "owner_id", None)
+    if author_id is not None and owner_id is not None and author_id == owner_id:
+        return True
+    permissions = getattr(author, "guild_permissions", None)
+    if permissions is None:
+        return False
+    return bool(
+        getattr(permissions, "manage_guild", False)
+        or getattr(permissions, "administrator", False)
+    )
 
 
 def _text(value) -> str:

