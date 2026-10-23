@@ -1,9 +1,11 @@
-# Guard test: the agent exposes no Discord commands.
+# Guard test: the agent exposes only the read-only `status` command.
 # The !pc command group and everything that existed only to serve it were
-# removed: the command handlers, the authorization gate, the Start Menu
-# application catalog and launcher, the session lock helper, and the
-# enabledCommands/requiredPermission configuration keys. This test fails
-# loudly if any of that surface is reintroduced.
+# removed: the destructive command handlers, the authorization gate, the
+# Start Menu application catalog and launcher, the session lock helper, and
+# the enabledCommands/requiredPermission configuration keys. This test
+# fails loudly if any of that surface is reintroduced. The one command that
+# exists is `status` in managed #main channels; it is read-only and uses no
+# discord.py command framework.
 
 import importlib.util
 
@@ -39,9 +41,16 @@ def test_bot_registers_no_prefix_command_machinery():
     from astral_remote.agent import discord_bot
 
     text = Path(discord_bot.__file__).read_text(encoding="utf-8")
-    for forbidden in ("command_prefix", "process_commands", "add_command", "on_command_error"):
+    for forbidden in ("command_prefix", "process_commands", "add_command", "on_command_error", "CommandTree"):
         assert forbidden not in text, forbidden
-    assert "no commands" in text
+    assert "parse_command" in text
+
+
+def test_only_status_is_available_and_only_in_main():
+    from astral_remote.agent.discord_setup import INFO_CHANNEL_COMMANDS, MAIN_CHANNEL_COMMANDS
+
+    assert MAIN_CHANNEL_COMMANDS == ("status",)
+    assert INFO_CHANNEL_COMMANDS == ()
 
 
 def test_config_schema_has_no_command_or_permission_fields():

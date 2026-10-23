@@ -7,6 +7,8 @@ import sys
 from rich.console import Console
 
 from astral_remote.cli.menu import (
+    QUIT_HINT_INTERRUPT,
+    QUIT_HINT_TYPE,
     erase_lines,
     is_interactive,
     physical_line_count,
@@ -126,13 +128,14 @@ def test_interactive_navigation_leaves_single_menu(monkeypatch):
     monkeypatch.setenv("COLUMNS", "80")
     monkeypatch.setenv("LINES", "24")
     out = FakeTTY()
-    assert _run_with_streams("n\nb\nq\n", out, monkeypatch) == 0
+    assert _run_with_streams("n\nb\nq\nq\n", out, monkeypatch) == 0
     raw = out.getvalue()
-    # Every input erases menu+prompt before the action:
-    # HOME(11+2+1) + REMOTE(10+2+1) + HOME(11+2+1); +1 is the forced newline.
-    assert raw.count("\x1b[2K") == 14 + 13 + 14
+    # Navigation erases menu+prompt before the action:
+    # HOME(11+2+1) + REMOTE(10+2+1); +1 is the forced newline. The quit hint
+    # stays below the visible menu instead of erasing it.
+    assert raw.count("\x1b[2K") == 14 + 13
     visible = "\n".join(_emulate_screen(raw))
-    assert visible.count("┌── HOME") == 0  # erased on quit
+    assert visible.count("┌── HOME") == 1  # one menu, kept for the quit hint
     assert visible.count("┌── REMOTE") == 0  # erased on navigation
     assert visible.count("by Astral Interactive") == 1  # banner printed once, never erased
     assert "Bye." not in visible
@@ -303,3 +306,99 @@ def test_non_interactive_has_no_cursor_sequences(monkeypatch):
     assert run_menu() == 0
     assert "\x1b[" not in out.getvalue()
     assert "┌── HOME" in out.getvalue()
+
+
+def test_confirm_exit_requires_the_quit_gesture(monkeypatch):
+    """A typed quit needs q again; an interrupt needs a second Ctrl+C."""
+    from astral_remote.cli.menu import confirm_exit
+
+    for answer, expected in (("q\n", True), (" Q \n", True), ("y\n", False),
+                             ("\n", False), ("quit\n", False), ("n\n", False)):
+        monkeypatch.setattr(sys, "stdin", io.StringIO(answer))
+        console = Console(file=io.StringIO(), force_terminal=False, no_color=True)
+        assert confirm_exit(console, False) is expected
+
+    # At the interrupt hint only another Ctrl+C confirms; typed input cancels.
+    monkeypatch.setattr(sys, "stdin", io.StringIO("q\n"))
+    console = Console(file=io.StringIO(), force_terminal=False, no_color=True)
+    assert confirm_exit(console, False, interrupted=True) is False
+
+
+def test_confirm_exit_accepts_interrupt_and_eof():
+    """A second Ctrl+C or a closed stream must never loop forever."""
+    from astral_remote.cli.menu import confirm_exit
+
+    console = Console(file=io.StringIO(), force_terminal=False, no_color=True)
+    for error in (KeyboardInterrupt, EOFError):
+        def raise_error(prompt="", _error=error):
+            raise _error
+
+        console.input = raise_error
+        assert confirm_exit(console, False) is True
+
+
+def test_quit_asks_for_confirmation(monkeypatch):
+    """`q` shows the hint below the still-visible menu and needs q again."""
+    monkeypatch.setenv("COLUMNS", "80")
+    monkeypatch.setenv("LINES", "24")
+    out = FakeTTY()
+    assert _run_with_streams("q\nq\n", out, monkeypatch) == 0
+    visible = "\n".join(_emulate_screen(out.getvalue()))
+    assert visible.count(QUIT_HINT_TYPE) == 1
+    assert visible.count("┌── HOME") == 1  # the hint never hides the menu
+
+
+def _strip_sgr(text):
+    """Drop SGR color sequences so prompt text can be counted in the raw stream."""
+    import re
+
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
+def test_declining_quit_redraws_the_menu(monkeypatch):
+    """Anything but q again keeps the session alive and redraws the menu."""
+    monkeypatch.setenv("COLUMNS", "80")
+    monkeypatch.setenv("LINES", "24")
+    out = FakeTTY()
+    assert _run_with_streams("q\nn\nq\nq\n", out, monkeypatch) == 0
+    raw = out.getvalue()
+    visible = "\n".join(_emulate_screen(raw))
+    # Both hints are asked even though the redraw clears the first one.
+    assert _strip_sgr(raw).count(QUIT_HINT_TYPE) == 2
+    assert raw.count("\x1b[2J") == 1  # only the alt-screen entry clears
+    assert visible.count("┌── HOME") == 1  # redrawn once, never stacked
+
+
+def test_ctrl_c_asks_for_confirmation(monkeypatch):
+    """Ctrl+C shows the interrupt hint; anything but Ctrl+C keeps the session."""
+    import astral_remote.cli.menu as menu_mod
+
+    monkeypatch.setenv("COLUMNS", "80")
+    monkeypatch.setenv("LINES", "24")
+    out = FakeTTY()
+    calls = {"count": 0}
+
+    def read(console, enabled):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise menu_mod.InterruptedError("interrupted")
+        return "q"
+
+    monkeypatch.setattr(menu_mod, "read_choice", read)
+    assert _run_with_streams("x\nq\n", out, monkeypatch) == 0
+    plain = _strip_sgr(out.getvalue())
+    assert plain.count(QUIT_HINT_INTERRUPT) == 1
+    assert plain.count(QUIT_HINT_TYPE) == 1
+
+
+def test_non_interactive_quit_does_not_prompt(monkeypatch):
+    """Pipes cannot answer a prompt, so they keep quitting immediately."""
+    out = FakePipe()
+    stdin = FakePipe()
+    stdin.write("q\n")
+    stdin.seek(0)
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setattr(sys, "stdout", out)
+    assert run_menu() == 0
+    assert QUIT_HINT_TYPE not in out.getvalue()
+    assert QUIT_HINT_INTERRUPT not in out.getvalue()

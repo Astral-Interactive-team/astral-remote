@@ -38,6 +38,23 @@ def test_runtime_config_carries_startup_name():
     assert any("startupName" in problem for problem in validate_config(blank))
 
 
+def test_runtime_config_carries_the_bot_prefix():
+    assert default_runtime_config()["prefix"] == "!"
+    assert default_runtime_config(prefix="pc!")["prefix"] == "pc!"
+    assert default_runtime_config(prefix="  ?  ")["prefix"] == "?"
+    # An unusable value falls back instead of embedding a broken prefix.
+    for bad in ("", "   ", "two words", "x" * 9, None, 42):
+        assert default_runtime_config(prefix=bad)["prefix"] == "!"
+
+
+def test_rejects_invalid_prefix_values():
+    for bad in ("", "   ", "two words", "x" * 9, "\t", None, 42):
+        cfg = dict(default_runtime_config())
+        cfg["prefix"] = bad
+        assert any("prefix" in problem for problem in validate_config(cfg))
+    assert validate_config(default_runtime_config(prefix="pc!")) == []
+
+
 def test_runtime_config_has_no_command_or_permission_keys():
     defaults = default_runtime_config()
     assert "enabledCommands" not in defaults

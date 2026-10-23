@@ -23,13 +23,14 @@ def test_rejects_malformed(bad):
 
 
 def test_codegen_roundtrip():
-    source = render_payload_module(TOKEN_A, default_runtime_config())
+    source = render_payload_module(TOKEN_A, default_runtime_config(prefix="pc!"))
     assert TOKEN_A not in source or "TOKEN" in source
     namespace: dict = {}
     exec(compile(source, "_embedded_payload", "exec"), namespace)
     assert namespace["PAYLOAD_V"] == PAYLOAD_VERSION
     assert namespace["TOKEN"] == TOKEN_A
     assert namespace["CONFIG"]["startupName"] == "AstralRemote"
+    assert namespace["CONFIG"]["prefix"] == "pc!"
 
 
 def test_codegen_rejects_bad_token_and_config():
@@ -39,6 +40,10 @@ def test_codegen_rejects_bad_token_and_config():
     bad["agentVersion"] = ""
     with pytest.raises(BuildError):
         render_payload_module(TOKEN_A, bad)
+    bad_prefix = dict(default_runtime_config())
+    bad_prefix["prefix"] = "two words"
+    with pytest.raises(BuildError):
+        render_payload_module(TOKEN_A, bad_prefix)
 
 
 def test_load_missing_payload_raises(tmp_path, monkeypatch):

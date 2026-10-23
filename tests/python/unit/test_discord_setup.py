@@ -3,8 +3,10 @@
 # render/pack/publish path still runs for real.
 # Covers stable identity reuse, one category per guild, idempotent
 # on_ready/reconnect behavior, concurrency, failure handling, duplicate
-# reporting without automatic deletion, and the managed #info dashboard
-# (Components V2 report, in-place refresh, shrink cleanup).
+# reporting without automatic deletion, the managed #info dashboard
+# (Components V2 report, in-place refresh, shrink cleanup), the managed
+# #main command channel below it, and the read-only `status` reply that is
+# scoped to each #main channel's own category.
 
 import asyncio
 from types import SimpleNamespace
@@ -12,6 +14,7 @@ from types import SimpleNamespace
 import astral_remote.agent.discord_setup as setup
 from astral_remote.agent.discord_setup import (
     INFO_CHANNEL_NAME,
+    MAIN_CHANNEL_NAME,
     CategoryManager,
     ensure_host_categories,
     host_category_name,
@@ -47,16 +50,20 @@ class FakeTextChannel:
         self.guild = SimpleNamespace(me=BOT_USER)
         self.messages = {}
         self.sent = []
+        self.contents = []
         self._next_id = 5000
 
     async def send(self, content=None, view=None, **kwargs):
-        assert content is None, "report messages must never carry content"
+        # A message carries either a report view or plain text, never both.
+        assert content is None or view is None
         self._next_id += 1
         message = FakeMessage(self._next_id)
         if view is not None:
             message.views.append(view)
+            self.sent.append(view)
+        if content is not None:
+            self.contents.append(content)
         self.messages[message.id] = message
-        self.sent.append(view)
         return message
 
     async def fetch_message(self, message_id):
@@ -71,7 +78,9 @@ class FakeCategory:
         self.name = name
         self.edit_calls = []
         self.channels = []
-        self._next_channel_id = 2000
+        # Channel IDs are unique per category, so two categories in one guild
+        # never share a managed channel ID.
+        self._next_channel_id = category_id * 10
 
     async def edit(self, name=None, **kwargs):
         self.edit_calls.append(name)
@@ -207,7 +216,8 @@ def test_first_startup_creates_info_channel_with_system_report(tmp_path):
     guild = FakeGuild()
     agent = {"hostname": "HOST", "agentVersion": "9.9.9"}
     category = _run(manager.ensure_guild(guild, {"agentVersion": "9.9.9"}))
-    assert [channel.name for channel in category.channels] == [INFO_CHANNEL_NAME]
+    # #main is created after #info, so it sits directly below it.
+    assert [channel.name for channel in category.channels] == [INFO_CHANNEL_NAME, MAIN_CHANNEL_NAME]
     channel = category.channels[0]
     assert len(channel.sent) == expected_parts(agent)
     headline = view_text(channel.sent[0])
@@ -223,6 +233,13 @@ def test_first_startup_creates_info_channel_with_system_report(tmp_path):
     assert all(view.total_children_count <= 40 for view in channel.sent)
     assert manager.is_info_channel(channel.id) is True
     assert manager.is_info_channel(4242) is False
+    # #main is the operator command channel: no report is posted there and
+    # its messages are never treated as #info chatter.
+    main_channel = category.channels[1]
+    assert main_channel.sent == []
+    assert manager.is_info_channel(main_channel.id) is False
+    assert manager._channel_counts[guild.id] == 2
+    assert manager._store.main_channel_id(guild.id) == main_channel.id
 
 
 def test_info_channel_reused_and_report_refreshed_across_restarts(tmp_path):
@@ -242,7 +259,7 @@ def test_info_channel_reused_and_report_refreshed_across_restarts(tmp_path):
     chosen = _run(restarted.ensure_guild(second_guild, {"agentVersion": "2.0.0"}))
     assert chosen is category
     assert second_guild.created == []
-    assert len(category.channels) == 1  # no duplicate channel
+    assert len(category.channels) == 2  # no duplicate channel
     assert len(channel.sent) == parts  # no duplicate report message
     # Every part was refreshed in place, so each tracked message holds two views.
     assert all(len(message.views) == 2 for message in tracked_messages)
@@ -293,9 +310,140 @@ def test_existing_info_channel_is_adopted(tmp_path):
 
     chosen = _run(manager.ensure_guild(guild))
     assert chosen is category
-    assert category.channels == [existing]
+    assert category.channels[0] is existing
+    assert [channel.name for channel in category.channels] == [INFO_CHANNEL_NAME, MAIN_CHANNEL_NAME]
     assert len(existing.sent) >= 1
     assert manager.is_info_channel(4444) is True
+
+
+def test_existing_main_channel_is_adopted(tmp_path):
+    manager = make_manager(tmp_path)
+    category = FakeCategory(9, host_category_name("HOST", manager.installation_id))
+    existing_info = FakeTextChannel(4444, INFO_CHANNEL_NAME)
+    existing_main = FakeTextChannel(5555, MAIN_CHANNEL_NAME)
+    category.channels.extend([existing_info, existing_main])
+    guild = FakeGuild(categories=[category])
+
+    _run(manager.ensure_guild(guild))
+    assert category.channels == [existing_info, existing_main]  # no duplicate
+    assert manager._store.main_channel_id(guild.id) == 5555
+
+
+def test_main_channel_is_recreated_when_deleted(tmp_path):
+    path = tmp_path / "identity.json"
+    first = CategoryManager("HOST", "machineid", state_path=path, collect_fn=stub_collector())
+    guild = FakeGuild()
+    category = _run(first.ensure_guild(guild))
+    deleted = category.channels[1]
+    assert deleted.name == MAIN_CHANNEL_NAME
+    category.channels.remove(deleted)  # operator deleted #main
+
+    restarted = CategoryManager("HOST", "machineid", state_path=path, collect_fn=stub_collector())
+    _run(restarted.ensure_guild(FakeGuild(categories=guild.categories)))
+    assert [channel.name for channel in category.channels] == [INFO_CHANNEL_NAME, MAIN_CHANNEL_NAME]
+    assert category.channels[1] is not deleted
+    assert restarted._store.main_channel_id(guild.id) == category.channels[1].id
+
+
+def test_main_channel_failure_still_publishes_report(tmp_path, monkeypatch):
+    manager = make_manager(tmp_path)
+
+    async def boom(guild, category):
+        raise RuntimeError("Missing Permissions")
+
+    monkeypatch.setattr(manager, "_ensure_main_channel", boom)
+    guild = FakeGuild()
+    category = _run(manager.ensure_guild(guild))
+    assert [channel.name for channel in category.channels] == [INFO_CHANNEL_NAME]
+    assert category.channels[0].sent  # the report still went out
+    assert manager._channel_counts[guild.id] == 1
+
+
+def test_refresh_republishes_in_place_without_new_channels(tmp_path):
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    category = _run(manager.ensure_guild(guild, {"agentVersion": "1.0.0"}))
+    info_channel = category.channels[0]
+    parts = len(info_channel.sent)
+    tracked = list(info_channel.messages.values())
+
+    assert _run(manager.refresh(guild, {"agentVersion": "2.0.0"})) is True
+    assert len(info_channel.sent) == parts  # edited, not re-sent
+    assert len(category.channels) == 2  # no channel duplicated
+    assert all(len(message.views) == 2 for message in tracked)
+    assert "**Agent version:** 2.0.0" in view_text(tracked[0].views[-1])
+
+
+def test_refresh_skips_guilds_that_never_resolved(tmp_path):
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    assert _run(manager.refresh(guild)) is False
+    assert guild.attempts == 0
+    assert guild.categories == []
+
+
+def test_refresh_does_not_log_every_pass(tmp_path, monkeypatch):
+    lines = []
+    monkeypatch.setattr(setup, "info", lambda message, detail=None: lines.append(message))
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    _run(manager.ensure_guild(guild))
+    assert "Host info report published." in lines
+    lines.clear()
+    _run(manager.refresh(guild))
+    assert lines == []  # a minute-by-minute refresh must not flood the log
+
+
+def test_refresh_host_categories_updates_resolved_guilds(tmp_path):
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    _run(manager.ensure_guild(guild))
+    info_channel = guild.categories[0].channels[0]
+    parts = len(info_channel.sent)
+    tracked = list(info_channel.messages.values())
+    bot = SimpleNamespace(guilds=[guild], latency=0.02, _astral_reconnects=1)
+
+    assert _run(setup.refresh_host_categories(bot, config={}, manager=manager)) == 1
+    assert len(info_channel.sent) == parts
+    assert all(len(message.views) == 2 for message in tracked)
+
+
+def test_refresh_host_categories_without_a_manager_is_safe(monkeypatch):
+    monkeypatch.setattr(setup, "_default_manager", None)
+    assert _run(setup.refresh_host_categories(SimpleNamespace(guilds=[]))) == 0
+
+
+def test_refresh_loop_repeats_until_the_client_closes(monkeypatch):
+    from astral_remote.agent import discord_bot
+
+    calls = []
+    checks = {"count": 0}
+
+    class FakeClient:
+        def is_closed(self):
+            checks["count"] += 1
+            return checks["count"] > 2
+
+    async def fake_refresh(client, config=None):
+        calls.append(config)
+        return 1
+
+    monkeypatch.setattr(setup, "refresh_host_categories", fake_refresh)
+    monkeypatch.setattr(discord_bot, "REFRESH_INTERVAL_SECONDS", 0)
+    _run(discord_bot._refresh_loop(FakeClient(), {"agentVersion": "1"}))
+    assert calls == [{"agentVersion": "1"}, {"agentVersion": "1"}]
+
+
+def test_start_refresh_reuses_the_running_task():
+    from astral_remote.agent import discord_bot
+
+    class RunningTask:
+        def done(self):
+            return False
+
+    client = SimpleNamespace(_astral_refresh_task=RunningTask())
+    discord_bot._start_refresh(client, {})
+    assert isinstance(client._astral_refresh_task, RunningTask)
 
 
 def test_deleted_info_message_is_reposted(tmp_path):
@@ -323,6 +471,9 @@ def test_info_channel_failure_still_returns_category(tmp_path, monkeypatch):
     category = _run(manager.ensure_guild(guild))
     assert category is not None
     assert guild.created == [host_category_name("HOST", manager.installation_id)]
+    # #main is still ensured even when #info cannot be created.
+    assert [channel.name for channel in category.channels] == [MAIN_CHANNEL_NAME]
+    assert manager._channel_counts[guild.id] == 1
 
 
 def test_module_level_is_info_channel_matches_created_channel(tmp_path, monkeypatch):
@@ -358,6 +509,7 @@ def test_repeated_on_ready_events_do_not_duplicate(tmp_path):
         assert _run(ensure_host_categories(bot, "HOST", "machineid", manager=manager)) == 1
     assert guild.attempts == 1
     assert len(guild.created) == 1
+    assert len(guild.categories[0].channels) == 2  # #info and #main, once each
 
 
 def test_reconnection_reuses_remembered_category(tmp_path):
@@ -517,3 +669,154 @@ def test_runtime_facts_report_the_reconnect_count():
     facts = setup.runtime_facts(SimpleNamespace(latency=0.02, _astral_reconnects=3))
     assert facts == {"connected": True, "latencySeconds": 0.02, "reconnects": 3}
     assert setup.runtime_facts(SimpleNamespace())["reconnects"] is None
+
+
+def test_status_command_is_scoped_to_main_channels(tmp_path):
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    category = _run(manager.ensure_guild(guild, {"agentVersion": "9.9.9"}))
+    info_channel, main_channel = category.channels
+
+    assert manager.commands_for(main_channel.id) == ("status",)
+    assert manager.commands_for(info_channel.id) == ()
+    assert manager.commands_for(4242) == ()
+    assert manager.is_main_channel(main_channel.id) is True
+    assert manager.is_main_channel(info_channel.id) is False
+
+    facts = manager.status_facts(
+        main_channel.id,
+        {"agentVersion": "9.9.9"},
+        {"connected": True, "latencySeconds": 0.042, "reconnects": 1},
+    )
+    assert facts["hostname"] == "HOST"
+    assert facts["installationId"] == manager.installation_id
+    assert facts["agentVersion"] == "9.9.9"
+    assert facts["connected"] is True
+    assert facts["latencySeconds"] == 0.042
+    assert facts["reconnects"] == 1
+    assert isinstance(facts["uptimeSeconds"], int)
+    assert len(facts["lastUpdated"]) == 19
+    assert manager.status_facts(info_channel.id) is None
+
+
+def test_status_answer_differs_per_managed_category(tmp_path):
+    guild = FakeGuild()
+    alpha = CategoryManager(
+        "PC-ALPHA", "id-a", state_path=tmp_path / "a.json", collect_fn=stub_collector()
+    )
+    beta = CategoryManager(
+        "PC-BETA", "id-b", state_path=tmp_path / "b.json", collect_fn=stub_collector()
+    )
+    alpha_category = _run(alpha.ensure_guild(guild))
+    beta_category = _run(beta.ensure_guild(guild))
+    alpha_main = alpha_category.channels[1]
+    beta_main = beta_category.channels[1]
+    assert alpha_main.id != beta_main.id
+
+    alpha_facts = alpha.status_facts(alpha_main.id, {"agentVersion": "1.0.0"})
+    beta_facts = beta.status_facts(beta_main.id, {"agentVersion": "2.0.0"})
+    assert alpha_facts["hostname"] == "PC-ALPHA"
+    assert beta_facts["hostname"] == "PC-BETA"
+    assert alpha_facts["installationId"] != beta_facts["installationId"]
+    assert alpha_facts["agentVersion"] == "1.0.0"
+    assert beta_facts["agentVersion"] == "2.0.0"
+    # Each process answers only in its own category's #main.
+    assert alpha.status_facts(beta_main.id) is None
+    assert beta.status_facts(alpha_main.id) is None
+    assert alpha.commands_for(beta_main.id) == ()
+
+
+def test_module_level_command_helpers_follow_the_default_manager(tmp_path, monkeypatch):
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    category = _run(manager.ensure_guild(guild))
+    info_channel, main_channel = category.channels
+    monkeypatch.setattr(setup, "_default_manager", manager)
+
+    assert setup.is_main_channel(main_channel.id) is True
+    assert setup.is_main_channel(info_channel.id) is False
+    assert setup.commands_for_channel(main_channel.id) == ("status",)
+    assert setup.commands_for_channel(info_channel.id) == ()
+    assert setup.status_for_channel(main_channel.id)["hostname"] == "HOST"
+    assert setup.status_for_channel(info_channel.id) is None
+
+    monkeypatch.setattr(setup, "_default_manager", None)
+    assert setup.is_main_channel(main_channel.id) is False
+    assert setup.commands_for_channel(main_channel.id) == ()
+    assert setup.status_for_channel(main_channel.id) is None
+
+
+def test_on_message_answers_status_only_in_managed_main(tmp_path, monkeypatch):
+    from astral_remote.agent import discord_bot
+
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    category = _run(manager.ensure_guild(guild, {"agentVersion": "9.9.9"}))
+    info_channel, main_channel = category.channels
+    monkeypatch.setattr(setup, "_default_manager", manager)
+    handler = discord_bot.build_bot({"prefix": "!", "agentVersion": "9.9.9"}).on_message
+
+    class MemberMessage:
+        def __init__(self, channel, content, bot=False):
+            self.author = SimpleNamespace(bot=bot)
+            self.channel = channel
+            self.content = content
+            self.deleted = False
+
+        async def delete(self):
+            self.deleted = True
+
+    # A command in #main answers with plain code-block content for this
+    # category, not a Components V2 view.
+    _run(handler(MemberMessage(main_channel, "!status")))
+    assert main_channel.sent == []
+    assert len(main_channel.contents) == 1
+    card = main_channel.contents[0]
+    assert card.startswith("```\n")
+    assert "ASTRAL REMOTE — STATUS" in card
+    assert "[ AGENT ]" in card
+    assert "Hostname" + " " * 8 + ": HOST" in card
+
+    # The same command in #info is deleted and never answered.
+    report_count = len(info_channel.sent)
+    spammed = MemberMessage(info_channel, "!status")
+    _run(handler(spammed))
+    assert spammed.deleted is True
+    assert len(info_channel.sent) == report_count
+
+    # Bang-less chatter, unknown commands, and the bot's own messages are
+    # ignored in #main. Unmanaged channels are ignored even with a valid
+    # command.
+    _run(handler(MemberMessage(main_channel, "status")))
+    _run(handler(MemberMessage(main_channel, "!open")))
+    _run(handler(MemberMessage(main_channel, "!status", bot=True)))
+    other = FakeTextChannel(4242, "other")
+    _run(handler(MemberMessage(other, "!status")))
+    assert other.sent == []
+    assert other.contents == []
+    assert len(main_channel.contents) == 1
+
+
+def test_on_message_honours_the_configured_prefix(tmp_path, monkeypatch):
+    from astral_remote.agent import discord_bot
+
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    category = _run(manager.ensure_guild(guild))
+    main_channel = category.channels[1]
+    monkeypatch.setattr(setup, "_default_manager", manager)
+    handler = discord_bot.build_bot({"prefix": "pc!", "agentVersion": "9.9.9"}).on_message
+
+    class MemberMessage:
+        def __init__(self, channel, content):
+            self.author = SimpleNamespace(bot=False)
+            self.channel = channel
+            self.content = content
+
+        async def delete(self):
+            pass
+
+    _run(handler(MemberMessage(main_channel, "!status")))
+    assert main_channel.contents == []
+    _run(handler(MemberMessage(main_channel, "pc!status")))
+    assert len(main_channel.contents) == 1

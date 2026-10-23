@@ -1,7 +1,8 @@
 # Read-only host facts for the managed #info channel.
 # Returns hostname, machine ID, local IPv4, and process uptime. The
 # hostname lets the operator tell managed computers apart; the full #info
-# dashboard is built from windows/inventory.py. Still exposes no
+# dashboard is built from windows/inventory.py. Process uptime also feeds
+# the read-only `status` reply in managed #main channels. Still exposes no
 # usernames, SIDs, or local paths.
 
 from __future__ import annotations

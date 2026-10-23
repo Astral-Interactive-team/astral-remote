@@ -1,5 +1,6 @@
 # Production EXE build script: python scripts/build_exe.py
-# Prompts for the token with masked input, then runs the isolated
+# Prompts for the token with masked input, the output name, the bot
+# command prefix, and the self-install choices, then runs the isolated
 # staging PyInstaller onefile build. Run from the repository root.
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from astral_remote.builder.build import (  # noqa: E402
     prompt_autostart,
     prompt_exe_name,
     prompt_install_appdata,
+    prompt_prefix,
 )
 
 
@@ -21,6 +23,7 @@ def main() -> int:
     try:
         result = build_agent(
             output_name=prompt_exe_name(),
+            prefix=prompt_prefix(),
             install_to_appdata=prompt_install_appdata(),
             enable_autostart=prompt_autostart(),
         )
@@ -35,6 +38,7 @@ def main() -> int:
         print(f"Build failed: {exc}")
         return 1
     print(f"Build passed: {result['exe_path']}")
+    print(f"Command prefix: {result['prefix']}")
     print(f"Smoke test: {result['version_line']}")
     return 0
 

@@ -12,18 +12,40 @@ from astral_remote import AGENT_VERSION
 from astral_remote.shared.errors import ConfigError
 
 DEFAULT_STARTUP_NAME = "AstralRemote"
+DEFAULT_BOT_PREFIX = "!"
+MAX_BOT_PREFIX_LENGTH = 8
 
 _LEGACY_KEYS = ("guildId", "applicationId", "authorizedUserIds", "allowedApps")
 
 
+def is_valid_prefix(raw: Any) -> bool:
+    """True when raw is a usable command prefix.
+
+    A prefix is one to eight printable characters without whitespace, so
+    the command word can always be separated from its arguments.
+    """
+    if not isinstance(raw, str) or not 0 < len(raw) <= MAX_BOT_PREFIX_LENGTH:
+        return False
+    return not any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in raw)
+
+
+def normalize_prefix(raw: Any) -> str:
+    """Return a valid command prefix, falling back to the default."""
+    text = raw.strip() if isinstance(raw, str) else ""
+    return text if is_valid_prefix(text) else DEFAULT_BOT_PREFIX
+
+
 def default_runtime_config(install_to_appdata: bool = True, enable_autostart: bool = True,
-                           startup_name: str = DEFAULT_STARTUP_NAME) -> dict[str, Any]:
+                           startup_name: str = DEFAULT_STARTUP_NAME,
+                           prefix: str = DEFAULT_BOT_PREFIX) -> dict[str, Any]:
     """Return the default non-secret runtime config embedded by the builder.
 
     `install_to_appdata` and `enable_autostart` are the build-time choices
     for the EXE's self-install behavior; both default to enabled.
     `startup_name` names the `%APPDATA%` subfolder and the autostart
-    registry value and logon task.
+    registry value and logon task. `prefix` is the command prefix embedded
+    for the operator command channel; an unusable value falls back to the
+    default.
     """
     name = str(startup_name).strip() or DEFAULT_STARTUP_NAME
     return {
@@ -31,6 +53,7 @@ def default_runtime_config(install_to_appdata: bool = True, enable_autostart: bo
         "installToAppData": bool(install_to_appdata),
         "enableAutostart": bool(enable_autostart),
         "startupName": name,
+        "prefix": normalize_prefix(prefix),
     }
 
 
@@ -46,6 +69,8 @@ def validate_config(raw: Any) -> list[str]:
             problems.append(f"{flag} must be true or false.")
     if "startupName" in raw and (not isinstance(raw["startupName"], str) or raw["startupName"].strip() == ""):
         problems.append("startupName must be a non-empty string.")
+    if "prefix" in raw and not is_valid_prefix(raw["prefix"]):
+        problems.append(f"prefix must be 1-{MAX_BOT_PREFIX_LENGTH} characters without whitespace.")
     for legacy in _LEGACY_KEYS:
         if legacy in raw:
             problems.append(f"{legacy} was removed. Rebuild the EXE; no configuration file is used.")

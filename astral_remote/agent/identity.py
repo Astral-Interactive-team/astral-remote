@@ -3,9 +3,9 @@
 # %LOCALAPPDATA%\AstralRemote\identity.json so the same installation keeps
 # the same identity across restarts. The file also remembers the Discord
 # category this installation manages in each guild (plus the managed #info
-# channel and the ordered IDs of the Components V2 report messages posted
-# there), so a fresh process can refresh the exact objects instead of
-# searching by display name alone.
+# channel, the managed #main channel, and the ordered IDs of the
+# Components V2 report messages posted in #info), so a fresh process can
+# refresh the exact objects instead of searching by display name alone.
 # On first load the pre-rename %LOCALAPPDATA%\AstralRelay\identity.json is
 # copied into the new directory when no new file exists yet, so an upgrade
 # keeps its installation ID and does not post a duplicate category.
@@ -84,7 +84,7 @@ def _normalize(raw) -> dict:
                 continue
             name = value.get("name") if isinstance(value.get("name"), str) else ""
             record = {"categoryId": category_id, "name": name}
-            for extra in ("infoChannelId", "infoMessageId"):
+            for extra in ("infoChannelId", "mainChannelId", "infoMessageId"):
                 number = value.get(extra)
                 if isinstance(number, int) and not isinstance(number, bool):
                     record[extra] = number
@@ -140,9 +140,9 @@ class StateStore:
     """In-memory view of the persisted state with write-through saves.
 
     Generates the installation ID lazily on first use and remembers one
-    managed category plus the managed #info channel and host-facts message
-    per guild. Reads and writes are fault-tolerant, so a missing or
-    unwritable state file never breaks the agent.
+    managed category plus the managed #info and #main channels and the
+    report message IDs per guild. Reads and writes are fault-tolerant, so
+    a missing or unwritable state file never breaks the agent.
     """
 
     def __init__(self, path=None, env=None):
@@ -174,6 +174,11 @@ class StateStore:
         """Return the remembered managed #info channel ID for a guild, or None."""
         record = self._record(guild_id)
         return record.get("infoChannelId") if record else None
+
+    def main_channel_id(self, guild_id) -> int | None:
+        """Return the remembered managed #main channel ID for a guild, or None."""
+        record = self._record(guild_id)
+        return record.get("mainChannelId") if record else None
 
     def info_message_id(self, guild_id) -> int | None:
         """Return the single legacy report message ID for a guild, or None."""
@@ -220,6 +225,13 @@ class StateStore:
             record["infoChannelId"] = int(channel_id)
         if message_id is not None:
             record["infoMessageId"] = int(message_id)
+        self.save()
+
+    def remember_main(self, guild_id, channel_id=None) -> None:
+        """Persist the managed #main channel ID for a guild."""
+        record = self._guild_record(guild_id)
+        if channel_id is not None:
+            record["mainChannelId"] = int(channel_id)
         self.save()
 
     def remember_info_messages(self, guild_id, message_ids) -> None:

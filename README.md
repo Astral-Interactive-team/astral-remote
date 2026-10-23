@@ -48,7 +48,7 @@ The startup banner is stored in `astral_remote/cli/banner.txt`. The development 
 
 ### Discord Agent
 
-The Agent connects to Discord with no commands of any kind: no prefix commands, no slash commands, and no command registration or synchronization. Its only Discord work is to create or adopt its managed per-computer category, publish the read-only system report to the managed `#info` channel, and keep that channel clean by deleting member messages posted there.
+The Agent connects to Discord with one read-only prefix command, `status`, available only in its managed `#main` channel; it registers no slash commands and no command tree. Its Discord work is to create or adopt its managed per-computer category with its `#info` and `#main` channels, publish the read-only system report to the managed `#info` channel, keep that channel clean by deleting member messages posted there, and answer `status` in `#main` with a short summary for that category's computer.
 
 ### System Information Dashboard
 
@@ -143,7 +143,7 @@ Available menu actions:
 | `02` | Start Agent |
 | `N` | Open the REMOTE page |
 | `B` | Return to HOME |
-| `Q` | Exit |
+| `Q` | Exit (`Type Q again to quit:`; Ctrl+C asks for a second Ctrl+C) |
 
 Generating an Agent (option `01`, or `python scripts/build_exe.py`) prompts for:
 
@@ -151,10 +151,11 @@ Generating an Agent (option `01`, or `python scripts/build_exe.py`) prompts for:
 |:--|:--|:--|
 | Discord Bot Token | required | Embedded in the EXE as recoverable data. |
 | Output EXE name | `astral-remote.exe` | Published under `dist/`. |
+| Bot command prefix | `!` | Embedded in the EXE as `prefix` for the managed `#main` command channel. 1–8 characters, no spaces. |
 | Copy Agent into `%APPDATA%` | Yes | The EXE copies itself to `%APPDATA%\<name>\AstralRemote-Agent.exe` on launch so deleting the original keeps autostart working. |
 | Register Windows autostart | Yes | The EXE registers `HKCU Run` and a logon task on launch. |
 
-`<name>` is the output EXE name without its extension (for example `astral-remote`, or `MyAgent` for `MyAgent.exe`); the same name is used for the `%APPDATA%` folder, the `HKCU Run` value, and the logon task. Both install choices are embedded in the EXE at build time and are not asked on the target PC.
+`<name>` is the output EXE name without its extension (for example `astral-remote`, or `MyAgent` for `MyAgent.exe`); the same name is used for the `%APPDATA%` folder, the `HKCU Run` value, and the logon task. Both install choices and the command prefix are embedded in the EXE at build time and are not asked on the target PC.
 
 **Upgrading from a pre-rename build:** the Agent now installs itself as `%APPDATA%\AstralRemote\AstralRemote-Agent.exe` and registers the `AstralRemote` autostart entry. The old `AstralRelay` backup copy and its `HKCU Run` value and logon task are not removed automatically; delete them once so only one Agent runs. The existing `%LOCALAPPDATA%\AstralRelay\identity.json` is adopted automatically on first start (see below).
 
@@ -194,7 +195,7 @@ Each token-specific build currently requires a full PyInstaller rebuild, which c
 
 ## Discord Setup
 
-The Python Agent exposes **no commands**: no prefix commands and no slash commands. It only manages its per-computer category and publishes the read-only system report.
+The Python Agent exposes one command: the read-only `status` prefix command in its managed `#main` channel. There are no slash commands and no other prefix commands. #info accepts no commands.
 
 The bot requires the **Message Content Intent** so it can receive and delete member messages posted in its managed `#info` channel.
 
@@ -203,13 +204,27 @@ Enable the intent in both:
 1. The Agent's Discord intent configuration.
 2. Discord Developer Portal → Application → Bot → Privileged Gateway Intents.
 
-The bot also needs **Manage Channels** to create the managed category and its `#info` channel, and **Manage Messages** to clear member messages posted in `#info`.
+The bot also needs **Manage Channels** to create the managed category and its `#info` and `#main` channels, and **Manage Messages** to clear member messages posted in `#info`.
+
+### Commands
+
+Command availability is decided per managed channel:
+
+| Channel | Available commands |
+|:--|:--|
+| `#main` | `status` |
+| `#info` | none (member messages are deleted) |
+| Any other channel | none |
+
+The command prefix is the value chosen at build time (default `!`), so an EXE built with the default answers `!status`. The command word is case-insensitive and extra arguments are ignored; an unknown command is ignored silently.
+
+`status` answers with a plain channel message whose content is one grouped code block, sent for the computer that owns the `#main` channel where it was posted. The reply opens with `ASTRAL REMOTE — STATUS` and is split into `[ AGENT ]` (state, hostname, installation ID, version, uptime), `[ CONNECTION ]` (Discord state, gateway latency, reconnect count), and `[ LAST UPDATED ]` (the time the reply was generated). General command replies are plain fenced code blocks with no Components V2 wrapper, so labels and values line up in monospace. It does not repeat the full #info report, collects nothing new, changes no system state, and echoes no user input. Because each Agent answers only in its own managed `#main`, a guild with several managed categories gets a different answer from each one.
 
 ### Access Control
 
-There is nothing to authorize, because the Agent registers no commands and never acts on operator input.
+Anyone who can post in a managed `#main` channel can run `status`. That is acceptable because the command is read-only and reveals only facts already published in `#info` beside it. Posting in `#info` has no effect: those messages are deleted.
 
-Previously registered `/pc` slash commands and the old `!pc` prefix commands (`status`, `apps`, `open`, `lock`) have been removed from the codebase. Old slash registrations may remain visible in Discord until removed.
+Previously registered `/pc` slash commands and the old `!pc` prefix commands (`apps`, `open`, `lock`) have been removed from the codebase. The only current command is the read-only `status` described above. Old slash registrations may remain visible in Discord until removed.
 
 The Agent no longer ships a removal script. Remove old registrations manually from the **Discord Developer Portal** (Application → Commands) if they still appear. This is an explicit operator action and never runs automatically during startup.
 
@@ -224,13 +239,14 @@ Each Agent installation manages exactly one category per guild.
 
 Channels are added to the managed category one at a time, starting with `#info`:
 
-- The bot creates a single `#info` text channel inside the category and publishes this computer's full system report there using Discord **Components V2** (no embeds, no select menus, no pagination). The channel ID and the ordered report message IDs are remembered in `identity.json`, so later starts refresh the same messages instead of posting duplicates.
+- The bot creates a single `#info` text channel inside the category and publishes this computer's full system report there using Discord **Components V2** (no embeds, no select menus, no pagination). The channel ID and the ordered report message IDs are remembered in `identity.json`, so later starts refresh the same messages instead of posting duplicates. While the Agent stays connected, the same messages are refreshed every 60 seconds, so utilization, uptime, and the `Last updated` timestamp stay current without adding new messages.
+- The bot then creates a single `#main` text channel directly below `#info`; its channel ID is remembered in the same file. `#main` is the operator command channel: it accepts `status`, while the Agent publishes nothing there and never deletes messages posted there. An existing `#main` channel in the category is adopted instead of duplicated. The command prefix is chosen at build time (default `!`) and stays embedded in the EXE as `prefix`.
 - The report follows the fixed topic order above, starting with the Overview. Each message opens with `# Astral Remote — System Information (Part N of M)` and its topic heading `## <topic>`, so the order stays readable even when a topic spans several messages.
 - Long lists are never summarized or truncated: every collected item is listed in full, and a list is split only at a section or item boundary, never mid-item.
 - Process, service, and installed-software inventories are not collected or shown at all.
 - Values the Agent genuinely cannot read are shown as `Unavailable`, and features the platform does not expose are shown as `Not supported`. No placeholder numbers are invented.
 - Utilization at or above 80% is marked `- High` and at or above 90% `- Critical`, in text and in the message accent colour together.
-- Member messages posted in `#info` are deleted immediately. The Agent registers no commands, so nothing posted anywhere is acted upon.
+- Member messages posted in `#info` are deleted immediately; `#main` accepts only the `status` command, and any other message there is ignored.
 
 ### System Report
 
@@ -323,10 +339,10 @@ Tests using mocks or test credentials do not prove that live Discord authenticat
 - Each token-specific build currently requires a full PyInstaller rebuild.
 - The embedded bot token can be extracted from the executable.
 - Automatic-start behavior should be reviewed before wider deployment.
-- The system report is published only to managed `#info` channels; the Agent exposes no commands to fetch it on demand.
+- The system report is published only to managed `#info` channels; `status` in `#main` returns a short summary, not the full report.
 - The report deliberately omits process, service, and installed-software inventories.
 - Utilization thresholds (`- High` at 80%, `- Critical` at 90%) and the matching accent colours are fixed constants, not user-configurable.
-- Report updates happen when the Agent starts; deleting a report message makes the Agent repost it on the next start.
+- Report updates happen when the Agent starts and every 60 seconds while it stays connected; deleting a report message makes the Agent repost it on the next refresh.
 - The `CREATE_NO_WINDOW` flags for helper processes are covered by unit tests, but their effect has not been observed live from a rebuilt `--noconsole` EXE.
 
 ## Project Status

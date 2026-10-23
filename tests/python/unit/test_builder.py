@@ -62,6 +62,62 @@ def test_prompt_exe_name_default_and_invalid(monkeypatch, capsys):
     assert build_mod.prompt_exe_name() == "Custom.exe"
 
 
+def test_sanitize_prefix():
+    from astral_remote.builder.build import DEFAULT_BOT_PREFIX, sanitize_prefix
+
+    assert sanitize_prefix() == DEFAULT_BOT_PREFIX
+    assert sanitize_prefix("") == DEFAULT_BOT_PREFIX
+    assert sanitize_prefix("  ") == DEFAULT_BOT_PREFIX
+    assert sanitize_prefix("  pc!  ") == "pc!"
+    for bad in ("two words", "x" * 9, "\x01"):
+        with pytest.raises(BuildError):
+            sanitize_prefix(bad)
+
+
+def test_prompt_prefix_default_and_invalid(monkeypatch, capsys):
+    import io
+    import sys as sys_mod
+
+    from astral_remote.builder import build as build_mod
+
+    class Answer(io.StringIO):
+        def isatty(self):
+            return False
+
+    monkeypatch.setattr(sys_mod, "stdin", Answer(""))
+    assert build_mod.prompt_prefix() == build_mod.DEFAULT_BOT_PREFIX
+    monkeypatch.setattr(sys_mod, "stdin", Answer("two words\n"))
+    assert build_mod.prompt_prefix() == build_mod.DEFAULT_BOT_PREFIX
+    assert "Invalid prefix" in capsys.readouterr().out
+    monkeypatch.setattr(sys_mod, "stdin", Answer("pc!\n"))
+    assert build_mod.prompt_prefix() == "pc!"
+
+
+def test_prompt_prefix_is_themed_on_tty(monkeypatch):
+    import io
+    import re
+    import sys as sys_mod
+
+    from astral_remote.builder import build as build_mod
+
+    class Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    class Answer(io.StringIO):
+        def isatty(self):
+            return False
+
+    out = Tty()
+    monkeypatch.setattr(sys_mod, "stdout", out)
+    monkeypatch.setattr(sys_mod, "stdin", Answer("\n"))
+    assert build_mod.prompt_prefix() == build_mod.DEFAULT_BOT_PREFIX
+    written = out.getvalue()
+    assert "\x1b[" in written
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", written)
+    assert plain == f"[Bot command prefix] (default: {build_mod.DEFAULT_BOT_PREFIX}): "
+
+
 def test_prompt_exe_name_is_themed_on_tty(monkeypatch):
     import io
     import sys as sys_mod
@@ -201,6 +257,32 @@ def test_generate_cancel_returns_to_menu(monkeypatch):
     monkeypatch.setattr(sys, "stdin", stdin)
     console = Console(file=_FakePipe(), force_terminal=False, no_color=True)
     assert menu_mod.run_generate(console, False) is False
+
+
+def test_generate_passes_the_configured_prefix(monkeypatch):
+    import io
+    import sys
+
+    from rich.console import Console
+
+    import astral_remote.cli.menu as menu_mod
+
+    captured = {}
+
+    def fake_build(**kwargs):
+        captured.update(kwargs)
+        return {"exe_path": "dist/x.exe", "version_line": "AstralRemote-Agent 0.0.0",
+                "prefix": kwargs["prefix"]}
+
+    monkeypatch.setattr(build_mod, "build_agent", fake_build)
+    monkeypatch.setattr(build_mod, "prompt_build_token", lambda **kwargs: TOKEN_A)
+    monkeypatch.setattr(build_mod, "prompt_prefix", lambda: "pc!")
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))  # every other prompt defaults
+    out = io.StringIO()
+    console = Console(file=out, force_terminal=False, no_color=True)
+    assert menu_mod.run_generate(console, False) is True
+    assert captured["prefix"] == "pc!"
+    assert "Command prefix: pc!" in out.getvalue()
 
 
 def test_start_interrupt_returns_to_menu(monkeypatch):

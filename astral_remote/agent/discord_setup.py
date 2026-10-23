@@ -3,21 +3,26 @@
 # operators can tell managed computers apart. The category name carries a
 # stable, non-secret installation ID (bracketed) that is matched on
 # restarts instead of relying on the display hostname alone; the created
-# category ID is also remembered locally. Alongside the category one
-# managed #info text channel is ensured (channels are added one at a
-# time); the bot publishes this computer's full Components V2 system
-# report there and refreshes the same tracked messages on later starts.
+# category ID is also remembered locally. Alongside the category two
+# managed text channels are ensured in order (channels are added one at a
+# time): #info carries this computer's full Components V2 system report,
+# and #main sits directly below it as the operator command channel. The
+# bot refreshes the same tracked #info messages on later starts and, while
+# connected, every minute. #main accepts the read-only `status` command
+# and answers with the facts of the computer that owns that category.
 # Repeated on_ready events, reconnects, and concurrent startup tasks reuse
 # the same category, guarded by a per-guild lock; the resolved category is
 # cached in memory, so a reconnect never republishes the report. Existing
 # duplicates left by older builds are reported for administrator review
 # and never deleted. Missing Manage Channels permission or HTTP failures
-# only warn and are not retried in a loop. The agent exposes no Discord
-# commands, so this module owns the whole Discord surface besides login.
+# only warn and are not retried in a loop. The agent exposes no slash
+# commands and no command tree; this module owns the whole Discord surface
+# besides login.
 
 from __future__ import annotations
 
 import asyncio
+import datetime
 
 from astral_remote.agent.identity import StateStore
 from astral_remote.shared.logging_utils import info, warn
@@ -27,6 +32,13 @@ LEGACY_HOST_PREFIX = "pc "
 DEFAULT_HOST = "unknown-host"
 DEFAULT_ID = "unknown-id"
 INFO_CHANNEL_NAME = "info"
+MAIN_CHANNEL_NAME = "main"
+
+# Command availability is decided per managed channel. #info is the
+# read-only dashboard and accepts no commands; #main accepts the read-only
+# `status` command. Every other channel accepts nothing.
+INFO_CHANNEL_COMMANDS: tuple[str, ...] = ()
+MAIN_CHANNEL_COMMANDS: tuple[str, ...] = ("status",)
 
 
 def collect_inventory(agent: dict, env=None) -> dict:
@@ -114,6 +126,7 @@ class CategoryManager:
         self._resolved: dict = {}
         self._failed: set = set()
         self._info_channels: set = set()
+        self._main_channels: set = set()
         self._category_status: dict = {}
         self._duplicate_guilds: set = set()
         self._channel_counts: dict = {}
@@ -126,6 +139,20 @@ class CategoryManager:
         """True when the channel is a managed #info channel for this process."""
         return channel_id is not None and channel_id in self._info_channels
 
+    def is_main_channel(self, channel_id) -> bool:
+        """True when the channel is a managed #main channel for this process."""
+        return channel_id is not None and channel_id in self._main_channels
+
+    def commands_for(self, channel_id) -> tuple[str, ...]:
+        """Return the commands this process accepts in one managed channel.
+
+        #main accepts the operator commands; #info and every unmanaged
+        channel accept none.
+        """
+        if channel_id is not None and channel_id in self._main_channels:
+            return MAIN_CHANNEL_COMMANDS
+        return INFO_CHANNEL_COMMANDS
+
     def _lock(self, guild_id):
         """Return this guild's lock, recreating it when the event loop changes."""
         loop = asyncio.get_running_loop()
@@ -137,7 +164,7 @@ class CategoryManager:
         return entry[1]
 
     async def ensure_guild(self, guild, config=None, runtime=None):
-        """Ensure exactly one managed category and its #info report in a guild.
+        """Ensure exactly one managed category and its channels in a guild.
 
         Returns the category, or None when it cannot be ensured (no
         permission, HTTP error, ambiguous legacy state). Never raises.
@@ -166,9 +193,33 @@ class CategoryManager:
                 # Ambiguous or unrecoverable: do not retry in a loop.
                 self._failed.add(guild_id)
                 return None
-            await self._ensure_info(guild, category, config, runtime)
+            await self._ensure_channels(guild, category, config, runtime)
             self._resolved[guild_id] = category
             return category
+
+    async def refresh(self, guild, config=None, runtime=None) -> bool:
+        """Republish the #info report for a guild already set up in this process.
+
+        Returns True when the report was refreshed. Guilds that never
+        resolved (missing permission, HTTP/API failure, ambiguous legacy
+        state) are skipped, so the periodic refresh never becomes a retry
+        loop for a broken setup and never creates a second category. The
+        per-guild lock serializes the refresh with on_ready setup. Never
+        raises.
+        """
+        guild_id = getattr(guild, "id", None)
+        if guild_id is None or guild_id not in self._resolved:
+            return False
+        async with self._lock(guild_id):
+            category = self._resolved.get(guild_id)
+            if category is None:
+                return False
+            try:
+                await self._ensure_channels(guild, category, config, runtime, announce=False)
+            except Exception as err:  # noqa: BLE001 - refresh must keep running
+                warn("Host info refresh unavailable.", {"guild": guild_id, "message": str(err)})
+                return False
+        return True
 
     async def _resolve(self, guild):
         guild_id = getattr(guild, "id", None)
@@ -262,26 +313,41 @@ class CategoryManager:
         except Exception as err:  # noqa: BLE001 - rename is cosmetic
             warn("Host category rename skipped.", {"message": str(err)})
 
-    async def _ensure_info(self, guild, category, config, runtime) -> None:
-        """Ensure the managed #info channel and refresh the system report.
+    async def _ensure_channels(self, guild, category, config, runtime, announce: bool = True) -> None:
+        """Ensure the managed #info and #main channels, then refresh the report.
 
-        Best-effort: a missing channel or a failed publication only warns,
-        so category setup still succeeds. Never raises.
+        #info carries the read-only dashboard; #main is created right after
+        it so it appears directly below #info and stays the operator
+        command channel. Both steps are best-effort: a missing channel or
+        a failed publication only warns, so category setup still succeeds.
+        `announce` keeps the periodic refresh from logging every pass.
+        Never raises.
         """
         guild_id = getattr(guild, "id", None)
+        info_channel = None
         try:
-            channel = await self._ensure_info_channel(guild, category)
+            info_channel = await self._ensure_info_channel(guild, category)
         except Exception as err:  # noqa: BLE001 - Forbidden/HTTP only warn
             warn("Host info channel unavailable.", {"guild": guild_id, "message": str(err)})
+        main_channel = None
+        try:
+            main_channel = await self._ensure_main_channel(guild, category)
+        except Exception as err:  # noqa: BLE001 - Forbidden/HTTP only warn
+            warn("Host main channel unavailable.", {"guild": guild_id, "message": str(err)})
+        if main_channel is not None:
+            main_id = getattr(main_channel, "id", None)
+            if main_id is not None:
+                # Each process tracks only its own #main channels, so an
+                # answer describes this computer, not another category.
+                self._main_channels.add(main_id)
+        self._channel_counts[guild_id] = int(info_channel is not None) + int(main_channel is not None)
+        if info_channel is None:
             return
-        if channel is None:
-            return
-        channel_id = getattr(channel, "id", None)
+        channel_id = getattr(info_channel, "id", None)
         if channel_id is not None:
             self._info_channels.add(channel_id)
-        self._channel_counts[guild_id] = 1
         try:
-            await self._publish_report(guild, channel, config, runtime)
+            await self._publish_report(guild, info_channel, config, runtime, announce=announce)
         except Exception as err:  # noqa: BLE001 - publishing only warns
             warn("Host info report unavailable.", {"guild": guild_id, "message": str(err)})
 
@@ -304,6 +370,56 @@ class CategoryManager:
         info("Created host info channel.", {"guild": guild_id, "channel": getattr(created, "id", None)})
         self._store.remember_info(guild_id, getattr(created, "id", None))
         return created
+
+    async def _ensure_main_channel(self, guild, category):
+        """Return the managed #main channel, creating exactly one when missing.
+
+        #main is the operator command channel, so the Agent never publishes
+        the report there and never deletes messages posted in it. It is
+        ensured after #info so a fresh category lists #info first.
+        """
+        guild_id = getattr(guild, "id", None)
+        remembered = self._store.main_channel_id(guild_id)
+        if remembered is not None:
+            found = self._find_channel(category, remembered)
+            if found is not None:
+                return found
+        existing = self._find_channel_by_name(category, MAIN_CHANNEL_NAME)
+        if existing is not None:
+            self._store.remember_main(guild_id, getattr(existing, "id", None))
+            return existing
+        create = getattr(category, "create_text_channel", None)
+        if not callable(create):
+            return None
+        created = await create(MAIN_CHANNEL_NAME, reason="AstralRemote operator commands")
+        info("Created host main channel.", {"guild": guild_id, "channel": getattr(created, "id", None)})
+        self._store.remember_main(guild_id, getattr(created, "id", None))
+        return created
+
+    def status_facts(self, channel_id, config=None, runtime=None) -> dict | None:
+        """Return status facts for one of this process's managed #main channels.
+
+        Each process tracks only its own #main channels, so a guild with
+        several managed categories gets a different status from each one.
+        Returns None outside this process's #main channels. Read-only: it
+        reads live counters and the clock, and changes nothing.
+        """
+        if channel_id not in self._main_channels:
+            return None
+        from astral_remote.agent.windows.info import get_uptime_seconds
+
+        settings = config or {}
+        link = runtime or {}
+        return {
+            "hostname": self._hostname,
+            "installationId": self._store.installation_id,
+            "agentVersion": settings.get("agentVersion"),
+            "uptimeSeconds": get_uptime_seconds(),
+            "connected": bool(link.get("connected")),
+            "latencySeconds": link.get("latencySeconds"),
+            "reconnects": link.get("reconnects"),
+            "lastUpdated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
 
     def _agent_facts(self, guild, config, runtime) -> dict:
         """Assemble the Agent facts the report shows for this guild.
@@ -335,7 +451,7 @@ class CategoryManager:
             "uptimeSeconds": get_uptime_seconds(),
         }
 
-    async def _publish_report(self, guild, channel, config, runtime) -> None:
+    async def _publish_report(self, guild, channel, config, runtime, announce: bool = True) -> None:
         """Collect the inventory off the event loop and publish the report."""
         from astral_remote.agent.info_report import build_report, build_views, publish_report
 
@@ -348,12 +464,13 @@ class CategoryManager:
         _, pages = build_report(inventory)
         views = build_views(pages)
         outcome = await publish_report(channel, views, self._store, guild_id)
-        info("Host info report published.", {
-            "guild": guild_id,
-            "parts": len(views),
-            "reused": outcome["reused"],
-            "failedPart": outcome["failedAt"],
-        })
+        if announce:
+            info("Host info report published.", {
+                "guild": guild_id,
+                "parts": len(views),
+                "reused": outcome["reused"],
+                "failedPart": outcome["failedAt"],
+            })
 
     def _category_channels(self, category) -> list:
         try:
@@ -391,6 +508,24 @@ def is_info_channel(channel_id) -> bool:
     return manager is not None and manager.is_info_channel(channel_id)
 
 
+def is_main_channel(channel_id) -> bool:
+    """True when the channel is a managed #main channel of this process."""
+    manager = _default_manager
+    return manager is not None and manager.is_main_channel(channel_id)
+
+
+def commands_for_channel(channel_id) -> tuple[str, ...]:
+    """Commands this process accepts in a managed channel (empty elsewhere)."""
+    manager = _default_manager
+    return manager.commands_for(channel_id) if manager is not None else ()
+
+
+def status_for_channel(channel_id, config=None, runtime=None) -> dict | None:
+    """Status facts for a managed #main channel's computer, or None."""
+    manager = _default_manager
+    return manager.status_facts(channel_id, config, runtime) if manager is not None else None
+
+
 def runtime_facts(bot) -> dict:
     """Read the bot's live link facts for the #info report.
 
@@ -413,7 +548,7 @@ def runtime_facts(bot) -> dict:
 
 async def ensure_host_categories(bot, hostname: str, host_id: str, manager: CategoryManager | None = None,
                                  config=None) -> int:
-    """Ensure this installation's category and #info report in every guild.
+    """Ensure this installation's category and managed channels in every guild.
 
     One managed category per guild is reused across reconnects. Returns
     the guild count attempted. Never raises. An explicit manager may be
@@ -428,3 +563,25 @@ async def ensure_host_categories(bot, hostname: str, host_id: str, manager: Cate
         except Exception:
             continue
     return len(guilds)
+
+
+async def refresh_host_categories(bot, config=None, manager: CategoryManager | None = None) -> int:
+    """Republish the #info report for every guild set up in this process.
+
+    Called by the Agent's periodic refresh. Only guilds already resolved
+    by ensure_host_categories are touched, so nothing is created here and
+    a refused or broken setup is never retried. Returns the number of
+    guilds refreshed. Never raises.
+    """
+    active = manager if manager is not None else _default_manager
+    if active is None:
+        return 0
+    runtime = runtime_facts(bot)
+    refreshed = 0
+    for guild in list(getattr(bot, "guilds", []) or []):
+        try:
+            if await active.refresh(guild, config, runtime):
+                refreshed += 1
+        except Exception:
+            continue
+    return refreshed

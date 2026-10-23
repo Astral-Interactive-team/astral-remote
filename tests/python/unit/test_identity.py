@@ -93,15 +93,19 @@ def test_info_channel_and_message_memory_round_trip(tmp_path):
     store = StateStore(path)
     store.remember(12345, 999, "HOST [abcdef]")
     store.remember_info(12345, channel_id=555, message_id=777)
+    store.remember_main(12345, 556)
 
     reopened = StateStore(path)
     assert reopened.category_id(12345) == 999
     assert reopened.info_channel_id(12345) == 555
+    assert reopened.main_channel_id(12345) == 556
     assert reopened.info_message_id(12345) == 777
     assert reopened.info_channel_id(99999) is None
-    # Remembering the category again must not drop the info IDs.
+    assert reopened.main_channel_id(99999) is None
+    # Remembering the category again must not drop the channel IDs.
     reopened.remember(12345, 999, "HOST [abcdef]")
     assert StateStore(path).info_message_id(12345) == 777
+    assert StateStore(path).main_channel_id(12345) == 556
 
 
 def test_report_message_list_round_trips_and_drops_the_legacy_field(tmp_path):
@@ -148,7 +152,8 @@ def test_load_state_drops_malformed_info_ids(tmp_path):
     malformed = tmp_path / "malformed.json"
     malformed.write_text(json.dumps({
         "installationId": "abc",
-        "guilds": {"1": {"categoryId": 7, "name": "n", "infoChannelId": "x", "infoMessageId": 5}},
+        "guilds": {"1": {"categoryId": 7, "name": "n", "infoChannelId": "x",
+                         "mainChannelId": "y", "infoMessageId": 5}},
     }), encoding="utf-8")
     state = load_state(malformed)
     assert state["guilds"]["1"] == {"categoryId": 7, "name": "n", "infoMessageId": 5}

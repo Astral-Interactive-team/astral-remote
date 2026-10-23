@@ -1315,10 +1315,10 @@ def build_agent_section(facts: dict) -> dict:
             str(facts.get("reconnects")) if isinstance(facts.get("reconnects"), int) else UNAVAILABLE
         ),
         "lastUpdate": NOT_SUPPORTED,
-        # The agent exposes no prefix commands, so no Discord permission is
-        # required to drive it; the report states that instead of naming a
-        # permission that nothing enforces.
-        "requiredPermission": f"{NOT_APPLICABLE} (agent exposes no commands)",
+        # The only operator command is the read-only `status` in the managed
+        # #main channel, so no management permission is required to use it;
+        # the report states that instead of naming a permission.
+        "requiredPermission": f"{NOT_APPLICABLE} (status needs no management permission)",
         "categoryStatus": format_text(facts.get("categoryStatus")),
         "channelCount": (
             str(facts.get("channelCount")) if isinstance(facts.get("channelCount"), int) else UNAVAILABLE

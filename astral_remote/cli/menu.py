@@ -1,7 +1,9 @@
 # Interactive two-page terminal menu for `python -m astral_remote`.
 # Page 1 (HOME): social links. Page 2 (REMOTE): Generate EXE, Start Agent.
-# Parsing, aliases, empty-input semantics, and cancellation behavior
-# match src/cli/menu.js exactly. Rendering uses Rich views.
+# Parsing, aliases, and empty-input semantics match src/cli/menu.js.
+# Quitting is confirmed by repeating the gesture (q + Enter, or Ctrl+C
+# again) so an accidental one does not close the menu. Rendering uses
+# Rich views.
 # Ported from src/cli/menu.js.
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
 from astral_remote.agent.secure_input import INTERRUPTED, InterruptedError
 from astral_remote.cli.links import SOCIAL_LINKS
-from astral_remote.cli.theme import supports_color
+from astral_remote.cli.theme import style_text, supports_color
 from astral_remote.cli.views import (
     home_block,
     kali_prompt_text,
@@ -29,6 +31,11 @@ from astral_remote.cli.views import (
 # Blank-screen hold before the first interactive paint. Non-interactive
 # streams (pipes, logs) skip it entirely so captured output stays plain.
 STARTUP_BLANK_SECONDS = 0.7
+
+# Quitting must be confirmed by repeating the gesture: q + Enter for a typed
+# quit, a second Ctrl+C for an interrupt.
+QUIT_HINT_TYPE = "Type Q again to quit: "
+QUIT_HINT_INTERRUPT = "Press Ctrl + C again to quit. "
 
 
 def parse_home_choice(raw) -> str | None:
@@ -90,6 +97,24 @@ def read_choice(console: Console, enabled: bool):
         raise InterruptedError(INTERRUPTED) from exc
     except EOFError:
         return ""
+
+
+def confirm_exit(console: Console, enabled: bool, interrupted: bool = False) -> bool:
+    """Ask for the quit gesture again. True means the quit may proceed.
+
+    A typed `q` in response to a typed quit, or a second Ctrl+C in response
+    to an interrupt, confirms the exit. Typing anything at the interrupt hint
+    (including `q`) does not confirm. Ctrl+C always confirms, and EOF accepts
+    so a closed stream can never trap the process in the menu.
+    """
+    hint = QUIT_HINT_INTERRUPT if interrupted else QUIT_HINT_TYPE
+    try:
+        answer = console.input(style_text(hint, enabled))
+    except (KeyboardInterrupt, EOFError):
+        return True
+    if interrupted:
+        return False
+    return str(answer).strip().lower() == "q"
 
 
 def physical_line_count(plain_text: str, width=None) -> int:
@@ -191,7 +216,7 @@ class _AlternateScreen:
 
 
 def run_menu() -> int:
-    """Run the two-page menu loop until the user quits or cancels."""
+    """Run the two-page menu loop until the user confirms quit or cancels."""
     enabled = supports_color()
     no_color = not enabled
     console = Console(no_color=no_color, highlight=False)
@@ -200,6 +225,7 @@ def run_menu() -> int:
     art = load_banner_text()
 
     interactive = is_interactive(console)
+
     # Full-screen like OpenCode: interactive sessions run inside the
     # alternate screen buffer, restored automatically on exit. Pipes and
     # logs keep plain output with no screen sequences.
@@ -222,14 +248,25 @@ def run_menu() -> int:
             try:
                 raw = read_choice(console, enabled)
             except InterruptedError:
+                # Ctrl+C: the menu stays visible and a second Ctrl+C quits.
+                if not interactive:
+                    return 0
+                _write_raw(console, "\n")
+                if confirm_exit(console, enabled, interrupted=True):
+                    return 0
+                refresh_screen(console, art, enabled, width)
+                continue
+            if raw is None:
                 return 0
+            choice = parse_home_choice(raw) if page == "home" else parse_remote_choice(raw)
             # Option 01 (Generate EXE) keeps the REMOTE menu and the echoed
             # choice on screen, so its token and output-name prompts appear
-            # directly below the menu. Every other choice erases the menu
-            # first so the next draw replaces this region instead of
-            # stacking another menu underneath it.
-            keep_menu = page == "remote" and parse_remote_choice(raw) == "generate"
-            if interactive and not keep_menu:
+            # directly below the menu. A quit request also keeps the menu on
+            # screen while its confirmation hint is shown. Every other choice
+            # erases the menu first so the next draw replaces this region
+            # instead of stacking another menu underneath it.
+            keep_menu = page == "remote" and choice == "generate"
+            if interactive and not keep_menu and choice != "exit":
                 # Terminate the input row explicitly: real terminals already
                 # moved to a fresh row on Enter while non-echoing streams did
                 # not, so one forced newline makes the cursor position (and
@@ -240,11 +277,17 @@ def run_menu() -> int:
                 # appending another menu below it. Action output (results,
                 # warnings) stays in scrollback; menus never accumulate.
                 erase_lines(console, menu_rows + prompt_rows(raw, enabled, console.width) + 1)
-            if raw is None:
-                return 0
+
+            if choice == "exit":
+                if not interactive or confirm_exit(console, enabled):
+                    return 0
+                # Declined: clear the menu, the prompt rows, and the hint that
+                # was printed below them before the loop redraws the menu.
+                _write_raw(console, "\n")
+                erase_lines(console, menu_rows + prompt_rows(raw, enabled, console.width) + 2)
+                continue
 
             if page == "home":
-                choice = parse_home_choice(raw)
                 if choice == "github":
                     open_url(SOCIAL_LINKS["github"], console, enabled)
                 elif choice == "telegram":
@@ -253,12 +296,9 @@ def run_menu() -> int:
                     open_url(SOCIAL_LINKS["discord"], console, enabled)
                 elif choice == "next":
                     page = "remote"
-                elif choice == "exit":
-                    return 0
                 else:
                     pass
             else:
-                choice = parse_remote_choice(raw)
                 if choice == "generate":
                     run_generate(console, enabled, show_token_header=False)
                     if interactive:
@@ -271,8 +311,6 @@ def run_menu() -> int:
                         refresh_screen(console, art, enabled, width)
                 elif choice == "back":
                     page = "home"
-                elif choice == "exit":
-                    return 0
                 else:
                     pass
 
@@ -284,8 +322,6 @@ def wait_to_continue(console: Console, enabled: bool) -> None:
     continue so the redrawn menu follows immediately. Returns at once
     on Ctrl+C or EOF (pipes never hang).
     """
-    from astral_remote.cli.theme import style_text
-
     try:
         console.input(style_text("press enter to continue...", enabled))
     except (KeyboardInterrupt, EOFError):
@@ -310,6 +346,7 @@ def run_generate(console: Console, enabled: bool, show_token_header: bool = True
         prompt_build_token,
         prompt_exe_name,
         prompt_install_appdata,
+        prompt_prefix,
     )
 
     stages = ["Validating token", "Preparing template", "Injecting payload", "Verifying output"]
@@ -323,6 +360,7 @@ def run_generate(console: Console, enabled: bool, show_token_header: bool = True
         return False
     try:
         output_name = prompt_exe_name()
+        prefix = prompt_prefix()
         install_appdata = prompt_install_appdata()
         autostart = prompt_autostart()
     except InterruptedError:
@@ -337,7 +375,8 @@ def run_generate(console: Console, enabled: bool, show_token_header: bool = True
             def on_stage(name: str) -> None:
                 progress.update(task, description=name, advance=1)
             result = build_agent(token=token, on_stage=on_stage, output_name=output_name,
-                                 install_to_appdata=install_appdata, enable_autostart=autostart)
+                                 install_to_appdata=install_appdata, enable_autostart=autostart,
+                                 prefix=prefix)
     except (InterruptedError, KeyboardInterrupt):
         # Build cancelled: stop only the build, back to menu.
         return False
@@ -346,6 +385,7 @@ def run_generate(console: Console, enabled: bool, show_token_header: bool = True
         wait_to_continue(console, enabled)
         return False
     console.print(RichText(f"Build passed: {result['exe_path']}", style="green" if enabled else "none"))
+    console.print(RichText(f"Command prefix: {result['prefix']}", style="green" if enabled else "none"))
     console.print(RichText(f"Smoke test: {result['version_line']}", style="green" if enabled else "none"))
     wait_to_continue(console, enabled)
     return True
@@ -382,6 +422,6 @@ def run_start(console: Console, enabled: bool) -> str | None:
     return None
 
 
-__all__ = ["erase_lines", "is_interactive", "open_url", "parse_dev_choice", "parse_home_choice",
+__all__ = ["confirm_exit", "erase_lines", "is_interactive", "open_url", "parse_dev_choice", "parse_home_choice",
            "parse_remote_choice", "physical_line_count", "prompt_rows", "read_choice", "refresh_screen",
            "run_generate", "run_menu", "run_start", "wait_to_continue"]

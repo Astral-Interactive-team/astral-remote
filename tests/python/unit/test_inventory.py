@@ -452,10 +452,10 @@ def test_agent_section_reports_version_and_registration(stub_probes):
     assert agent["latency"] == "42 ms"
     assert agent["reconnectCount"] == "0"
     assert agent["lastUpdate"] == inv.NOT_SUPPORTED
-    # The agent exposes no Discord commands, so the report states that no
-    # management permission is required instead of naming one.
+    # The only operator command is the read-only `status` in #main, so the
+    # report states that no management permission is required.
     assert "commands" not in agent
-    assert agent["requiredPermission"] == "N/A (agent exposes no commands)"
+    assert agent["requiredPermission"] == "N/A (status needs no management permission)"
     assert agent["categoryStatus"] == "Created new category (id 1)"
     assert agent["channelCount"] == "1"
     assert agent["duplicateWarning"] == "None detected"
