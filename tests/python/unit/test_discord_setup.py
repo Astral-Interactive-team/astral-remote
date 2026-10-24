@@ -969,6 +969,40 @@ def test_on_message_answers_status_only_in_managed_main(tmp_path, monkeypatch):
     assert len(main_channel.contents) == 1
 
 
+def test_on_message_answers_device_only_in_control_main(tmp_path, monkeypatch):
+    from astral_remote.agent import discord_bot
+
+    manager = make_manager(tmp_path)
+    guild = FakeGuild()
+    _run(ensure_host_categories(SimpleNamespace(guilds=[guild]), "HOST", "machineid",
+                                manager=manager, config={"agentVersion": "0.1.0"}))
+    control_main = guild.categories[0].channels[0]
+    host_main = guild.categories[1].channels[1]
+    monkeypatch.setattr(setup, "_default_manager", manager)
+    handler = discord_bot.build_bot({"prefix": "!", "agentVersion": "0.1.0"}).on_message
+    control_main.contents.clear()
+
+    # The member is denied before the registry is read.
+    denied = DeviceMemberMessage(control_main, "!device", manage_guild=False, author_id=99)
+    _run(handler(denied))
+    assert control_main.contents == ["```\n" + "\n".join([
+        "ASTRAL REMOTE — DEVICE DETAILS",
+        "━" * 32,
+        "",
+        "Permission denied.",
+        "Manage Server is required to view registered devices.",
+        "",
+        "━" * 32,
+    ]) + "\n```"]
+    listing = _run(handler(DeviceMemberMessage(control_main, "!device")))
+    assert listing is None
+    assert control_main.contents[-1].startswith("```\n")
+    assert "ASTRAL REMOTE — DEVICES" in control_main.contents[-1]
+
+    # A malformed message does not stop the client.
+    _run(handler(DeviceMemberMessage(control_main, "!device \\\\", manage_guild=False)))
+
+
 def test_on_message_honours_the_configured_prefix(tmp_path, monkeypatch):
     from astral_remote.agent import discord_bot
 

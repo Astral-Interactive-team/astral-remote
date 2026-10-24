@@ -27,9 +27,38 @@ def test_agent_runtime_starts_and_stops_without_discord_client(tmp_path):
     assert state.hostname == "LOCAL-PC"
     assert state.uptime_seconds == 42
     assert state.installation_id
+    assert runtime.snapshot()["hostname"] == state.hostname
     assert "discord" not in type(runtime).__module__.lower()
     _run(runtime.close())
     assert runtime.started is False
+
+
+def test_disabled_network_leaves_the_runtime_offline_and_stable(tmp_path):
+    runtime = AgentRuntime(
+        {"peerNetwork": {"enabled": False}},
+        state_path=tmp_path / "identity.json",
+        hostname_provider=lambda: "LOCAL-PC",
+        uptime_provider=lambda: 42,
+    )
+
+    state = _run(runtime.start())
+
+    assert runtime.peer_network is None
+    assert runtime.network_status() == {"enabled": False, "listening": False, "peers": []}
+    assert runtime.snapshot()["hostname"] == state.hostname
+    _run(runtime.close())
+    assert runtime.started is False
+
+
+def test_enabled_network_without_an_identity_store_is_unavailable(tmp_path):
+    runtime = AgentRuntime(
+        {"peerNetwork": {"enabled": True}},
+        state_path=tmp_path / "identity.json",
+        hostname_provider=lambda: "LOCAL-PC",
+    )
+
+    with pytest.raises(RuntimeError):
+        _run(runtime.start())
 
 
 def test_agent_runtime_exposes_local_inventory_through_its_state_interface(tmp_path):

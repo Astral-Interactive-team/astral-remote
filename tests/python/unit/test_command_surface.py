@@ -46,10 +46,15 @@ def test_bot_registers_no_prefix_command_machinery():
     assert "parse_command" in text
 
 
-def test_only_status_is_available_and_only_in_main():
-    from astral_remote.agent.discord_setup import INFO_CHANNEL_COMMANDS, MAIN_CHANNEL_COMMANDS
+def test_only_permanent_commands_are_available_in_their_channels():
+    from astral_remote.agent.discord_setup import (
+        CONTROL_MAIN_COMMANDS,
+        INFO_CHANNEL_COMMANDS,
+        MAIN_CHANNEL_COMMANDS,
+    )
 
     assert MAIN_CHANNEL_COMMANDS == ("status",)
+    assert CONTROL_MAIN_COMMANDS == ("device",)
     assert INFO_CHANNEL_COMMANDS == ()
 
 

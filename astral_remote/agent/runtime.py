@@ -15,7 +15,11 @@ from typing import Callable
 
 from astral_remote import AGENT_VERSION
 from astral_remote.agent.identity import StateStore
-from astral_remote.shared.security import IdentityStore, NodeIdentity
+from astral_remote.shared.security import (
+    IdentityStore,
+    NodeIdentity,
+    TrustStore
+)
 
 
 @dataclass(frozen=True)
@@ -117,9 +121,13 @@ class AgentRuntime:
             base = os.environ.get("LOCALAPPDATA")
             if not base:
                 raise RuntimeError("Peer network trust directory is unavailable.")
-            from astral_remote.shared.security import TrustStore
             factory = self._peer_network_factory or PeerNetwork
-            self._peer_network = factory(self._node_identity, TrustStore(Path(base) / "AstralRemote" / "peer-trust.json"), self._config)
+            self._peer_network = factory(
+                self._node_identity,
+                TrustStore(Path(base) / "AstralRemote" / "peer-trust.json"),
+                self._config,
+                installation_id=self._store.installation_id,
+            )
         try:
             await self._peer_network.start()
         except Exception:

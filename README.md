@@ -314,15 +314,64 @@ Build payload contains only non-secret configuration. `astral-remote credentials
 
 Future peer enrollment must authenticate possession of Node Identity key, then record its public key in trust policy. Installation ID alone never establishes trust. This release has no peer handshake, discovery, automatic enrollment, or credential distribution.
 
-## Peer Network (Phase 03)
+## Peer Network (Phase 03 & 04)
 
 `peerNetwork` is optional non-secret runtime configuration. It binds only configured address (default loopback), then attempts configured bootstrap peers. No default public peer exists.
 
 ```json
-{"peerNetwork":{"enabled":true,"bindHost":"127.0.0.1","bindPort":9443,"bootstrapPeers":[{"nodeId":"node-v1-...","publicKey":"base64-ed25519-public-key","host":"192.0.2.10","port":9443,"protocolVersion":1}]}}
+{"peerNetwork":{"enabled":true,"bindHost":"127.0.0.1","bindPort":9443,"bootstrapPeers":[{"nodeId":"node-v1-...","publicKey":"base64-ed25519-public-key","host":"192.0.2.10","port":9443,"protocolVersion":1}],"heartbeatIntervalSeconds":2.0,"heartbeatResponseTimeoutSeconds":1.0}}
 ```
 
 Each bootstrap key must also be registered in local `TrustStore`; address presence never grants trust. Transport is direct TLS 1.3 with signed Ed25519 nonce handshake bound to protocol/network/version and both session nonces. Unknown, revoked, malformed, replayed, or version-mismatched peers are rejected. No remote commands, token transport, auto-enrollment, peer discovery, HTTP/WebSocket API, DHT, NAT traversal, relay, UPnP, or firewall change exists in this phase. Direct TCP/TLS therefore needs reachable configured endpoints; NAT/Internet behavior is unverified.
+
+### Heartbeat presence (Phase 04)
+
+Each authenticated TLS session exchanges a lightweight signed `heartbeat` / `heartbeat-ack` pair on the same framing as authentication. Timing values can be tuned per configuration:
+
+| Key | Default | Meaning |
+|:--|:--|:--|
+| `heartbeatIntervalSeconds` | `2.0` | Interval between heartbeat requests. |
+| `heartbeatResponseTimeoutSeconds` | `1.0` | Time waited for an ACK before re-sending the same request. |
+
+Heartbeat state is reported separately from the socket state. A peer whose TCP/TLS session stays alive but whose ACKs stop arriving becomes `stale` after `DISCONNECT_STATUS_SECONDS` (10 s) of monotonic time without a successful ACK. The presence states are:
+
+| State | Meaning |
+|:--|:--|
+| `active` | A valid ACK was received recently. |
+| `waiting` | A request is outstanding but the response timeout has not yet made the peer stale. |
+| `stale` | No valid ACK for longer than `DISCONNECT_STATUS_SECONDS`. |
+| `failed` | A protocol error or session failure was recorded. |
+
+The heartbeat loop re-sends the same sequence until the retry limit (`_HEARTBEAT_MAX_RETRIES`) is reached, then tears down the session. A missing ACK never selects or demotes a Host — presence is diagnostic state only. Heartbeat receipt never registers a peer in `TrustStore`.
+
+Peer status is queried through `AgentRuntime.network_status()` or `PeerNetwork.status()`, which returns per-peer `connected`, `transport`, `error`, and a `heartbeat` dict with `state`, `sequence`, `last_sent_at`, `last_received_at`, `last_ack_at`, `last_ack_sequence`, and monotonic age fields.
+
+### Host presence (Phase 05)
+
+Host presence is a separate layer from generic peer heartbeats. Each authenticated session also carries host-specific `host-heartbeat` / `host-heartbeat-ack` messages that monitor whether the currently recognised Host is responding. Configuration lives under `peerNetwork.hostPresence`:
+
+```json
+{"peerNetwork":{"enabled":true,"hostPresence":{"heartbeatIntervalSeconds":2.0,"responseTimeoutSeconds":1.0,"failureThreshold":3,"recoveryThreshold":1}}}
+```
+
+| Key | Default | Meaning |
+|:--|:--|:--|
+| `heartbeatIntervalSeconds` | `2.0` | Interval between host heartbeat requests. |
+| `responseTimeoutSeconds` | `1.0` | Time waited for a host ACK before counting a missed response. |
+| `failureThreshold` | `3` | Consecutive missed responses that declare Host failure. |
+| `recoveryThreshold` | `1` | Consecutive valid responses that restore FOLLOWING_HOST. |
+
+Host presence states are distinct from peer heartbeat states:
+
+| State | Meaning |
+|:--|:--|
+| `HOST_UNKNOWN` | No Host identity has been observed yet. A configured host identity is a claim, not a live observation. |
+| `FOLLOWING_HOST` | A valid Host ACK was received and the Host is responding. |
+| `HOST_SUSPECTED` | One or more host responses were missed but the threshold has not been reached. |
+| `PRE_HOST` | The failure threshold was reached. This node is ready to participate in a Phase 06 election but does *not* take over Host work. |
+| `HOST_CONFLICT` | Two different nodes claim the Host role. Never resolved by picking a winner in this phase. |
+
+Host presence is queried through `AgentRuntime.network_status()["hostPresence"]` or the dedicated `PeerNetwork.host_status()` dict. The block reports state, host node ID, consecutive failures/successes, last ACK time and age, transition reason, last error, and the configured policy values. A peer heartbeat ACK is never treated as a host ACK; only `host-heartbeat-ack` with a matching sequence and host node ID advances host presence.
 
 Recommended precautions:
 
