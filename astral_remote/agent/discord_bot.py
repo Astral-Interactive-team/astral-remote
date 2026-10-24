@@ -30,7 +30,7 @@ from astral_remote.shared.logging_utils import error, info, warn
 REFRESH_INTERVAL_SECONDS = 60
 
 
-def _start_refresh(client, config: dict) -> None:
+def _start_refresh(client, config: dict, authority_checker=None) -> None:
     """Start the periodic #info refresh, once per client.
 
     on_ready fires again after a full re-identify, so an already running
@@ -39,10 +39,10 @@ def _start_refresh(client, config: dict) -> None:
     task = getattr(client, "_astral_refresh_task", None)
     if task is not None and not task.done():
         return
-    client._astral_refresh_task = asyncio.create_task(_refresh_loop(client, config))
+    client._astral_refresh_task = asyncio.create_task(_refresh_loop(client, config, authority_checker))
 
 
-async def _refresh_loop(client, config: dict) -> None:
+async def _refresh_loop(client, config: dict, authority_checker=None) -> None:
     """Republish the #info report every REFRESH_INTERVAL_SECONDS.
 
     The first refresh waits one interval, because on_ready already
@@ -52,6 +52,8 @@ async def _refresh_loop(client, config: dict) -> None:
 
     while not client.is_closed():
         await asyncio.sleep(REFRESH_INTERVAL_SECONDS)
+        if authority_checker is not None and not authority_checker():
+            break
         try:
             await refresh_host_categories(client, config=config)
         except Exception:
@@ -116,7 +118,7 @@ async def _answer_device(message, argument, prefix: str) -> None:
                                           "parts": len(replies)})
 
 
-def build_bot(config: dict):
+def build_bot(config: dict, authority_checker=None):
     """Create the Discord client. discord.py imports stay local to this function."""
     import discord
 
@@ -134,6 +136,8 @@ def build_bot(config: dict):
 
     @client.event
     async def on_ready() -> None:
+        if authority_checker is not None and not authority_checker():
+            return
         content = getattr(client.intents, "message_content", False)
         if not content:
             error("Message Content Intent unavailable; member messages in #info cannot be read. "
@@ -145,7 +149,7 @@ def build_bot(config: dict):
             await ensure_host_categories(client, get_hostname(), get_machine_id(), config=config)
         except Exception:
             pass
-        _start_refresh(client, config)
+        _start_refresh(client, config, authority_checker=authority_checker)
         info("Discord client ready.")
 
     @client.event
@@ -164,6 +168,8 @@ def build_bot(config: dict):
         registry. The prefix comes from the build-time config; unknown
         commands, bot messages, DMs, and every other channel are ignored.
         """
+        if authority_checker is not None and not authority_checker():
+            return
         from astral_remote.agent.channel_commands import (
             format_status,
             parse_argument,
@@ -221,9 +227,9 @@ def build_bot(config: dict):
     return client
 
 
-async def start_bot(config: dict, token: str):
+async def start_bot(config: dict, token: str, authority_checker=None):
     """Log in and run until interrupted. Caller owns shutdown signaling."""
-    client = build_bot(config)
+    client = build_bot(config, authority_checker=authority_checker)
     info("Logging in to Discord.")
     try:
         await client.start(token.strip())

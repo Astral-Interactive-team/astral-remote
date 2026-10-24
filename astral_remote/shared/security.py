@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 STORE_VERSION = 1
 IDENTITY_VERSION = 1
 TRUST_VERSION = 1
-
+ELECTION_STATE_VERSION = 1
 
 class SecurityStoreError(RuntimeError):
     """Safe local-store error; never includes protected data."""
@@ -117,7 +117,14 @@ class _ProtectedFile:
                      "data": base64.b64encode(self.protector.protect(raw)).decode("ascii")}
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temp = self.path.with_suffix(self.path.suffix + ".tmp")
-            temp.write_text(json.dumps(outer, separators=(",", ":")), encoding="utf-8")
+            content = json.dumps(outer, separators=(",", ":"))
+            with open(temp, "w", encoding="utf-8") as file_handle:
+                file_handle.write(content)
+                file_handle.flush()
+                try:
+                    os.fsync(file_handle.fileno())
+                except OSError:
+                    pass
             try:
                 os.chmod(temp, 0o600)
             except OSError:
@@ -143,6 +150,107 @@ class NodeIdentity:
     public_key: bytes
     private_key: bytes
 
+@dataclass(frozen=True)
+class ElectionState:
+    """Persisted election safety state."""
+    current_term: int = 0
+    voted_for: str | None = None
+
+class ElectionStateStore:
+    """Persist election terms and voting decisions safely."""
+
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        protector: DataProtector | None = None,
+    ):
+        self._file = _ProtectedFile(
+            path or _local_path("election-state.json"),
+            protector or WindowsDpapiProtector(),
+        )
+
+    def load(self) -> ElectionState:
+        """Load election state without resetting corrupt data."""
+        data = self._file.load("election-state")
+        if data is None:
+            return ElectionState()
+
+        version = data.get("version")
+        term = data.get("currentTerm")
+        voted_for = data.get("votedFor")
+
+        if type(version) is not int or version != ELECTION_STATE_VERSION:
+            raise SecurityStoreError("Election state version is unsupported.")
+
+        if type(term) is not int or term < 0:
+            raise SecurityStoreError("Election state term is invalid.")
+
+        if voted_for is not None and (
+            not isinstance(voted_for, str)
+            or not voted_for.strip()
+            or voted_for != voted_for.strip()
+        ):
+            raise SecurityStoreError("Election vote record is invalid.")
+
+        return ElectionState(
+            current_term=term,
+            voted_for=voted_for,
+        )
+
+    def observe_term(self, term: int) -> ElectionState:
+        """Persist a higher term and clear the previous term's vote."""
+        if type(term) is not int or term < 0:
+            raise SecurityStoreError("Election term is invalid.")
+
+        current = self.load()
+        if term <= current.current_term:
+            return current
+
+        updated = ElectionState(
+            current_term=term,
+            voted_for=None,
+        )
+        self._save(updated)
+        return updated
+
+    def grant_vote(self, term: int, candidate_node_id: str) -> bool:
+        """Persist one vote per term before reporting it as granted."""
+        if type(term) is not int or term < 1:
+            raise SecurityStoreError("Election term is invalid.")
+
+        if (
+            not isinstance(candidate_node_id, str)
+            or not candidate_node_id.strip()
+            or candidate_node_id != candidate_node_id.strip()
+        ):
+            raise SecurityStoreError("Election candidate identity is invalid.")
+
+        current = self.load()
+
+        if term < current.current_term:
+            return False
+
+        if term == current.current_term and current.voted_for is not None:
+            return current.voted_for == candidate_node_id
+
+        updated = ElectionState(
+            current_term=term,
+            voted_for=candidate_node_id,
+        )
+
+        # The vote is acknowledged only after persistence succeeds.
+        self._save(updated)
+        return True
+
+    def _save(self, state: ElectionState) -> None:
+        self._file.save(
+            "election-state",
+            {
+                "version": ELECTION_STATE_VERSION,
+                "currentTerm": state.current_term,
+                "votedFor": state.voted_for,
+            },
+        )
 
 def node_id_for(public_key: bytes) -> str:
     if not isinstance(public_key, bytes):

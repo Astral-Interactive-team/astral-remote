@@ -669,3 +669,157 @@ def test_election_membership_rejects_node_id_mismatch(tmp_path):
             config,
             installation_id="install-a",
         )
+
+
+def test_peer_network_status_includes_election_when_configured(tmp_path):
+    from astral_remote.shared.security import ElectionStateStore
+
+    identity = _identity(tmp_path / "node", b"node")
+    store = ElectionStateStore(tmp_path / "election.bin", XorTestProtector(b"test-key"))
+    config = _config()
+    config["peerNetwork"]["election"] = {
+        "members": [
+            {
+                "installationId": "install-a",
+                "nodeId": identity.node_id,
+            }
+        ]
+    }
+
+    network = PeerNetwork(
+        identity,
+        TrustStore(tmp_path / "trust"),
+        config,
+        installation_id="install-a",
+        election_state_store=store,
+    )
+
+    status = network.status()
+    assert "election" in status
+    assert status["election"]["term"] == 0
+    assert status["election"]["phase"] == "IDLE"
+    assert status["election"]["quorum"] == 1
+    assert "membershipFingerprint" in status["election"]
+
+
+def test_peer_network_handles_signed_election_request(tmp_path):
+    from astral_remote.agent.network.election_messages import (
+        build_election_request_payload,
+        membership_fingerprint,
+    )
+    from astral_remote.agent.network.models import ElectionMember
+    from astral_remote.shared.security import ElectionStateStore
+
+    voter_identity = _identity(tmp_path / "voter", b"voter-key")
+    cand_identity = _identity(tmp_path / "cand", b"cand-key")
+    voter_store = ElectionStateStore(
+        tmp_path / "election.bin", XorTestProtector(b"test-key")
+    )
+
+    members = (
+        ElectionMember("install-voter", voter_identity.node_id),
+        ElectionMember("install-cand", cand_identity.node_id),
+    )
+    config = _config()
+    config["peerNetwork"]["election"] = {
+        "members": [
+            {"installationId": m.installation_id, "nodeId": m.node_id}
+            for m in members
+        ]
+    }
+
+    voter_trust = TrustStore(tmp_path / "trust")
+    voter_trust.trust(cand_identity.node_id, cand_identity.public_key)
+
+    network = PeerNetwork(
+        voter_identity,
+        voter_trust,
+        config,
+        installation_id="install-voter",
+        election_state_store=voter_store,
+    )
+
+    writer = _FakeWriter()
+    session_id = "s" * 32
+    session = _make_session(
+        node_id=cand_identity.node_id,
+        session_id=session_id,
+        writer=writer,
+    )
+    network._sessions[cand_identity.node_id] = session
+
+    fp = membership_fingerprint(members)
+    payload = build_election_request_payload(
+        cand_identity,
+        session_id,
+        term=1,
+        candidate_node_id=cand_identity.node_id,
+        members_fingerprint=fp,
+    )
+
+    async def scenario():
+        await network._handle_session_message(session, payload)
+        assert len(writer.sent) == 1
+        assert voter_store.load().voted_for == cand_identity.node_id
+
+    asyncio.run(scenario())
+
+
+def test_host_monitor_failure_automatically_triggers_election(tmp_path):
+    from astral_remote.shared.security import ElectionStateStore
+
+    identity = _identity(tmp_path / "node", b"node")
+    store = ElectionStateStore(tmp_path / "election.bin", XorTestProtector(b"test-key"))
+    config = _config(
+        heartbeatIntervalSeconds=0.02,
+        heartbeatResponseTimeoutSeconds=0.01,
+    )
+    config["peerNetwork"]["hostPresence"] = {
+        "heartbeatIntervalSeconds": 0.02,
+        "responseTimeoutSeconds": 0.01,
+        "failureThreshold": 1,
+    }
+    config["peerNetwork"]["election"] = {
+        "members": [
+            {
+                "installationId": "install-a",
+                "nodeId": identity.node_id,
+            },
+            {
+                "installationId": "install-b",
+                "nodeId": "node-b",
+            },
+        ],
+        "timeoutSeconds": 0.5,
+        "retryDelaySeconds": 0.05,
+    }
+
+    network = PeerNetwork(
+        identity,
+        TrustStore(tmp_path / "trust"),
+        config,
+        installation_id="install-a",
+        election_state_store=store,
+    )
+
+    host_session = _make_session(node_id="node-b", session_id="s" * 32, writer=_FakeWriter())
+    network._host_tracker.observe_ack("node-b")
+    assert network.host_status()["state"] == "FOLLOWING_HOST"
+    network._host_session = host_session
+
+    async def scenario():
+        monitor_task = asyncio.create_task(network._run_host_monitor(host_session))
+        try:
+            await _wait_for(
+                lambda: network.election_snapshot() is not None
+                and network.election_snapshot().phase == "CANDIDATE"
+                and network.election_snapshot().term == 1,
+                timeout=2.0,
+            )
+            assert network.host_status()["state"] == "PRE_HOST"
+            assert network.election_snapshot().candidate_node_id == identity.node_id
+        finally:
+            monitor_task.cancel()
+            await network.close()
+
+    asyncio.run(scenario())

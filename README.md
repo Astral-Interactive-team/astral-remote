@@ -373,6 +373,36 @@ Host presence states are distinct from peer heartbeat states:
 
 Host presence is queried through `AgentRuntime.network_status()["hostPresence"]` or the dedicated `PeerNetwork.host_status()` dict. The block reports state, host node ID, consecutive failures/successes, last ACK time and age, transition reason, last error, and the configured policy values. A peer heartbeat ACK is never treated as a host ACK; only `host-heartbeat-ack` with a matching sequence and host node ID advances host presence.
 
+### Host Authority and Command Lease Expiration (Phase 07)
+
+Phase 07 introduces authoritative Host command dispatch and receiver-side lease expiration fencing.
+
+When an active Host sends an `agent-command`, it includes an absolute wall-clock timestamp (`leaseExpiresAt`) derived from its active Host authority lease.
+
+#### Receiver-Side Acceptance Rule
+
+The receiving Agent evaluates the command deadline immediately before execution:
+
+```text
+receiver_wall_clock < leaseExpiresAt - MAX_CLOCK_SKEW_SECONDS
+```
+
+Where `MAX_CLOCK_SKEW_SECONDS` is fixed at `5.0` seconds. Commands with missing, malformed, non-numeric, boolean, non-finite, or expired deadlines are rejected.
+
+#### Conditional Security & Clock-Skew Assumptions
+
+The stale-command rejection guarantee is **conditional**:
+
+- **Conditional safety bound:** The guarantee holds if and only if the receiving Agent's wall clock does not lag behind the relevant Host's wall clock by more than `MAX_CLOCK_SKEW_SECONDS` (5.0 s), and neither clock is adjusted backward in a way that violates this bound.
+- **Fail-open under excessive lag:** If the receiving Agent's clock lags the Host's clock by more than 5.0 seconds, delayed commands arriving after the Host's actual lease expiration will be accepted and executed (fails open).
+- **No active synchronization verification:** The application does not monitor Windows Time Service (`w32tm`) health, query NTP, or independently verify relative clock offsets. A structurally valid timestamp in a signed message is not proof that the participants' clocks are synchronized.
+- **Deployment requirements:**
+  - Participating nodes must maintain a relative wall-clock skew no greater than the configured 5-second limit for the security guarantee to apply.
+  - A configured or running Windows Time Service or NTP client is not, by itself, proof that the bound is currently satisfied.
+  - Clock synchronization loss, excessive drift, virtual-machine clock adjustments, and backward clock steps can invalidate the guarantee.
+  - Without a validated clock-skew bound, stale-command rejection after Host lease expiration is not guaranteed.
+  - Physical multi-machine partition and clock-divergence testing has not yet been completed.
+
 Recommended precautions:
 
 - Use a dedicated Discord bot with the minimum required permissions.
@@ -419,6 +449,8 @@ Tests using mocks or test credentials do not prove that live Discord authenticat
 - Utilization thresholds (`- 🟢 **Healthy**` below 80%, `- 🟡 **High**` at 80%, `- 🔴 **Critical**` at 90%) and the matching accent colours are fixed constants, not user-configurable.
 - Report updates happen when the Agent starts and every 60 seconds while it stays connected; deleting a report message makes the Agent repost it on the next refresh.
 - The `CREATE_NO_WINDOW` flags for helper processes are covered by unit tests, but their effect has not been observed live from a rebuilt `--noconsole` EXE.
+- Receiver-side command lease fencing depends on a bounded relative clock skew (<= 5.0 s). The application does not actively detect time-synchronization loss, so receiver clock lag exceeding 5.0 seconds fails open.
+- Physical multi-machine partition and clock-divergence testing for Phase 07 lease fencing has not yet been completed.
 
 ## Project Status
 

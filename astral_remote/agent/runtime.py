@@ -16,6 +16,7 @@ from typing import Callable
 from astral_remote import AGENT_VERSION
 from astral_remote.agent.identity import StateStore
 from astral_remote.shared.security import (
+    ElectionStateStore,
     IdentityStore,
     NodeIdentity,
     TrustStore
@@ -50,6 +51,7 @@ class AgentRuntime:
                  store: StateStore | None = None, hostname_provider: Callable | None = None,
                  uptime_provider: Callable | None = None,
                  inventory_collector: Callable | None = None, node_identity_store: IdentityStore | None = None,
+                 election_state_store: ElectionStateStore | None = None,
                  peer_network=None, peer_network_factory: Callable | None = None):
         self._config = dict(config or {})
         self._store = store if store is not None else StateStore(state_path, env)
@@ -57,6 +59,7 @@ class AgentRuntime:
         self._uptime_provider = uptime_provider
         self._inventory_collector = inventory_collector
         self._node_identity_store = node_identity_store
+        self._election_state_store = election_state_store
         self._node_identity: NodeIdentity | None = None
         self._peer_network = peer_network
         self._peer_network_factory = peer_network_factory
@@ -81,6 +84,11 @@ class AgentRuntime:
     def peer_network(self):
         """Agent-owned peer transport, or None when disabled/unconfigured."""
         return self._peer_network
+
+    @property
+    def host_lifecycle(self):
+        """Local Host lifecycle manager, or None when disabled/unconfigured."""
+        return self._peer_network.host_lifecycle if self._peer_network is not None else None
 
     def network_status(self) -> dict:
         return self._peer_network.status() if self._peer_network is not None else {"enabled": False, "listening": False, "peers": []}
@@ -122,11 +130,17 @@ class AgentRuntime:
             if not base:
                 raise RuntimeError("Peer network trust directory is unavailable.")
             factory = self._peer_network_factory or PeerNetwork
+            kwargs = {
+                "installation_id": self._store.installation_id,
+                "agent_runtime": self,
+            }
+            if self._election_state_store is not None:
+                kwargs["election_state_store"] = self._election_state_store
             self._peer_network = factory(
                 self._node_identity,
                 TrustStore(Path(base) / "AstralRemote" / "peer-trust.json"),
                 self._config,
-                installation_id=self._store.installation_id,
+                **kwargs,
             )
         try:
             await self._peer_network.start()

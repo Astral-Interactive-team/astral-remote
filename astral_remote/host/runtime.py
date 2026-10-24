@@ -18,7 +18,8 @@ class HostRuntime:
     """
 
     def __init__(self, agent: AgentRuntime, token: str | None = None, config: dict | None = None, *,
-                 credential_store=None, start_host: Callable[[dict, str], Awaitable[Any]] | None = None):
+                 credential_store=None, start_host: Callable[[dict, str], Awaitable[Any]] | None = None,
+                 lifecycle=None):
         if not isinstance(agent, AgentRuntime):
             raise TypeError("agent must be an AgentRuntime.")
         self._agent = agent
@@ -26,9 +27,23 @@ class HostRuntime:
         self._credential_store = credential_store
         self._config = dict(config or {})
         self._start_host = start_host or self._default_start
+        self._lifecycle = lifecycle
         self._task: asyncio.Task | None = None
         self._client: Any = None
         self._lock: asyncio.Lock | None = None
+
+    @property
+    def lifecycle(self):
+        return self._lifecycle
+
+    @lifecycle.setter
+    def lifecycle(self, value):
+        self._lifecycle = value
+
+    def is_authoritative(self) -> bool:
+        if self._lifecycle is not None:
+            return self._lifecycle.is_authoritative()
+        return self.started
 
     @property
     def started(self) -> bool:
@@ -101,8 +116,7 @@ class HostRuntime:
                 ) from err
             raise
 
-    @staticmethod
-    async def _default_start(config: dict, token: str) -> Any:
+    async def _default_start(self, config: dict, token: str) -> Any:
         from astral_remote.agent.discord_bot import start_bot
 
-        return await start_bot(config, token)
+        return await start_bot(config, token, authority_checker=self.is_authoritative)

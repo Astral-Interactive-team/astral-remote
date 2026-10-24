@@ -45,6 +45,39 @@ from astral_remote.agent.network.config import (
     parse_election_members
 )
 
+from astral_remote.agent.network.election import (
+    ElectionCoordinator,
+    ElectionSnapshot,
+)
+
+from astral_remote.agent.network.election_messages import (
+    build_election_request_payload,
+    build_election_response_payload,
+    build_lease_renewal_request_payload,
+    build_lease_renewal_response_payload,
+    build_agent_command_payload,
+    build_agent_command_reply_payload,
+    membership_fingerprint,
+)
+
+from astral_remote.agent.network.host_role import (
+    STANDBY,
+    ACTIVE,
+    ACTIVATING,
+    STEPPING_DOWN,
+    FENCED,
+    HostAuthorityConfig,
+    HostLifecycleManager,
+    HostRoleStatus,
+    parse_host_authority_config,
+)
+
+from astral_remote.agent.network.election_protocol import (
+    ElectionConfig,
+    ElectionProtocol,
+    parse_election_protocol_config,
+)
+
 from astral_remote.agent.network.constants import (
     PROTOCOL_VERSION,
     CONNECT_TIMEOUT_SECONDS,
@@ -57,7 +90,8 @@ from astral_remote.agent.network.constants import (
     _HEARTBEAT_ACTIVE,
     _HEARTBEAT_WAITING,
     _HEARTBEAT_FAILED,
-    _HEARTBEAT_MAX_RETRIES
+    _HEARTBEAT_MAX_RETRIES,
+    MAX_CLOCK_SKEW_SECONDS,
 )
 
 from astral_remote.agent.network.errors import PeerProtocolError
@@ -95,12 +129,25 @@ from astral_remote.agent.network.session import (
 from astral_remote.agent.network.transport import PeerTransport
 
 from astral_remote.shared.logging_utils import info, warn, error
-from astral_remote.shared.security import NodeIdentity, SecurityStoreError, TrustStore, node_id_for
+from astral_remote.shared.security import ElectionStateStore, NodeIdentity, SecurityStoreError, TrustStore, node_id_for
 
 class PeerNetwork:
     """Agent-owned direct TLS listener and configured bootstrap connections."""
 
-    def __init__(self, identity: NodeIdentity, trust_store: TrustStore, config: dict[str, Any] | None = None, *, installation_id: str | None = None,):
+    def __init__(
+        self,
+        identity: NodeIdentity,
+        trust_store: TrustStore,
+        config: dict[str, Any] | None = None,
+        *,
+        installation_id: str | None = None,
+        election_state_store: ElectionStateStore | None = None,
+        agent_runtime: Any = None,
+        host_runtime: Any = None,
+        credential_store: Any = None,
+        clock: Any = None,
+        wall_clock: Any = None,
+    ):
         self.identity, self.trust_store = identity, trust_store
         self._authenticator = PeerAuthenticator(self.identity, self.trust_store)
         self.enabled, self.bind_host, self.bind_port, self.bootstraps = parse_network_config(config)
@@ -113,12 +160,22 @@ class PeerNetwork:
         self._sessions: dict[str, PeerSession] = {}
         self._tasks: set[asyncio.Task] = set()
         self._transport = PeerTransport()
+        self._agent_runtime = agent_runtime
+        self._host_runtime = host_runtime
+        self._credential_store = credential_store
+        self._clock = clock or time.monotonic
+        self._wall_clock = wall_clock or time.time
+        self._pending_command_futures: dict[str, asyncio.Future] = {}
         self.installation_id = (
             installation_id.strip()
             if isinstance(installation_id, str) and installation_id.strip()
             else None
         )
         self._election_members = parse_election_members(config)
+        self._election_protocol: ElectionProtocol | None = None
+        self._host_lifecycle: HostLifecycleManager | None = None
+        self._host_authority_config = parse_host_authority_config(config)
+
         if self._election_members:
             if self.installation_id is None:
                 raise PeerProtocolError(
@@ -136,6 +193,44 @@ class PeerNetwork:
                 raise PeerProtocolError(
                     "Local node does not match election membership."
                 )
+            election_config = parse_election_protocol_config(config)
+            if election_state_store is not None:
+                self._election_state_store = election_state_store
+                coordinator = ElectionCoordinator(
+                    self.identity.node_id,
+                    self._election_members,
+                    election_state_store,
+                )
+                self._host_lifecycle = HostLifecycleManager(
+                    self.identity.node_id,
+                    self.installation_id,
+                    self._election_members,
+                    election_state_store,
+                    coordinator=coordinator,
+                    config=self._host_authority_config,
+                    host_runtime=self._host_runtime,
+                    credential_store=self._credential_store,
+                    clock=self._clock,
+                    wall_clock=self._wall_clock,
+                    broadcast_renewal=self._broadcast_lease_renewal,
+                )
+                self._election_protocol = ElectionProtocol(
+                    coordinator,
+                    election_state_store,
+                    self._election_members,
+                    election_config,
+                    send_to_peer=self._send_to_peer,
+                    get_identity=lambda: self.identity,
+                    get_session_id=self._get_session_id_for,
+                    get_host_state=lambda: self._host_tracker.state,
+                    on_elected=self._handle_election_won,
+                    clock=self._clock,
+                    lease_duration=self._host_authority_config.lease_duration_seconds,
+                    reboot_cooldown=self._host_authority_config.reboot_cooldown_seconds,
+                    enforce_lease=True,
+                )
+        else:
+            self._election_state_store = election_state_store
 
     @property
     def listening_port(self) -> int | None:
@@ -160,7 +255,7 @@ class PeerNetwork:
                 data["heartbeat"] = data["heartbeat"].__dict__.copy()
             peers.append(data)
         host_status = self._host_tracker.status()
-        return {
+        result = {
             "enabled": self.enabled,
             "listening": self._server is not None,
             "bindHost": self.bind_host,
@@ -184,10 +279,49 @@ class PeerNetwork:
             },
             "peers": peers,
         }
+        if self._election_protocol is not None:
+            snap = self._election_protocol.snapshot()
+            result["election"] = {
+                "term": snap.term,
+                "phase": snap.phase,
+                "candidateNodeId": snap.candidate_node_id,
+                "votesReceived": len(snap.votes_received),
+                "quorum": snap.quorum,
+                "membershipFingerprint": self._election_protocol.fingerprint,
+            }
+        if self._host_lifecycle is not None:
+            snap_role = self._host_lifecycle.status()
+            result["hostRole"] = {
+                "role": snap_role.role,
+                "term": snap_role.term,
+                "isAuthoritative": snap_role.is_authoritative,
+                "leaseExpiresAt": snap_role.lease_expires_at,
+                "leaseRemainingSeconds": snap_role.lease_remaining_seconds,
+                "consecutiveRenewalFailures": snap_role.consecutive_renewal_failures,
+                "condition": snap_role.condition,
+                "transitionReason": snap_role.transition_reason,
+            }
+        return result
 
     def host_status(self) -> dict[str, Any]:
         """Return only the Phase 05 host presence diagnostic block."""
         return self.status()["hostPresence"]
+
+    @property
+    def host_lifecycle(self) -> HostLifecycleManager | None:
+        return self._host_lifecycle
+
+    @property
+    def host_role(self) -> str:
+        return self._host_lifecycle.role if self._host_lifecycle is not None else STANDBY
+
+    def is_host_authoritative(self) -> bool:
+        return self._host_lifecycle.is_authoritative() if self._host_lifecycle is not None else False
+
+    def set_host_runtime(self, runtime: Any) -> None:
+        self._host_runtime = runtime
+        if self._host_lifecycle is not None:
+            self._host_lifecycle.set_host_runtime(runtime)
 
     async def start(self) -> None:
         if not self.enabled or self._server is not None:
@@ -209,6 +343,10 @@ class PeerNetwork:
             self._spawn(self.connect(peer))
 
     async def close(self) -> None:
+        if self._host_lifecycle is not None:
+            await self._host_lifecycle.demote(reason="Network closing")
+        if self._election_protocol is not None:
+            await self._election_protocol.shutdown()
         self._host_tracker.reset()
         self._host_session = None
         for session in tuple(self._sessions.values()):
@@ -530,15 +668,27 @@ class PeerNetwork:
                     break
                 if session.host_pending_sequence is not None:
                     # No matching host ACK arrived.
-                    self._host_tracker.observe_failure()
+                    prev_state = self._host_tracker.state
+                    new_state = self._host_tracker.observe_failure()
+                    if new_state == PRE_HOST and prev_state != PRE_HOST:
+                        info("Host failure detected; triggering election campaign.",
+                             {"nodeId": session.node_id})
+                        self._trigger_election_if_eligible()
                 else:
                     # A host ACK arrived while sleeping.
-                    self._host_tracker.observe_ack(session.node_id)
+                    prev_state = self._host_tracker.state
+                    new_state = self._host_tracker.observe_ack(session.node_id)
+                    if prev_state == PRE_HOST and new_state != PRE_HOST:
+                        info("Host recovered from PRE_HOST; cancelling campaign.")
+                        if self._election_protocol is not None:
+                            self._spawn(self._election_protocol.cancel_campaign())
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             self._host_tracker.observe_conflict(
                 f"Host monitor error: {exc}")
+            if self._election_protocol is not None:
+                self._spawn(self._election_protocol.cancel_campaign())
 
     async def _send_locked(self, session: PeerSession, payload: dict[str, Any]) -> None:
         async with session.send_lock:
@@ -615,7 +765,12 @@ class PeerNetwork:
     async def _handle_session_message(self, session: PeerSession, message: dict[str, Any]) -> None:
         """Validate one authenticated session message and update presence."""
         kind = message.get("type")
-        if kind not in {"heartbeat", "heartbeat-ack", "host-heartbeat", "host-heartbeat-ack"}:
+        if kind not in {
+            "heartbeat", "heartbeat-ack", "host-heartbeat", "host-heartbeat-ack",
+            "election-request", "election-response",
+            "lease-renewal-request", "lease-renewal-response",
+            "agent-command", "agent-command-reply",
+        }:
             session.record_error("Unsupported peer message type.")
             self._refresh_status(session)
             return
@@ -625,8 +780,24 @@ class PeerNetwork:
             session.record_error(str(exc))
             self._refresh_status(session)
             return
+
+        # Fencing invariant: observe higher term and fence local host if superseded
+        term = message.get("electionTerm") or message.get("hostTerm")
+        if isinstance(term, int) and self._host_lifecycle is not None:
+            if term > self._host_lifecycle.term:
+                self._host_lifecycle.observe_term(term)
+
         if kind in ("heartbeat", "heartbeat-ack"):
             await self._handle_peer_heartbeat_message(session, message, kind)
+            return
+        if kind in ("election-request", "election-response"):
+            await self._handle_election_message(session, message, kind)
+            return
+        if kind in ("lease-renewal-request", "lease-renewal-response"):
+            await self._handle_lease_renewal_message(session, message, kind)
+            return
+        if kind in ("agent-command", "agent-command-reply"):
+            await self._handle_agent_command_message(session, message, kind)
             return
         await self._handle_host_heartbeat_message(session, message, kind)
 
@@ -688,6 +859,8 @@ class PeerNetwork:
                 self._host_tracker.observe_conflict(
                     f"Host heartbeat from {session.node_id} claims "
                     f"{claimed_host}, but this node is {self.identity.node_id}")
+                if self._election_protocol is not None:
+                    await self._election_protocol.cancel_campaign()
             self._refresh_status(session)
             return
         # host-heartbeat-ack
@@ -706,8 +879,273 @@ class PeerNetwork:
             return
         # Valid host ACK from the recognised Host.
         session.touch_host_ack(sequence)
-        self._host_tracker.observe_ack(session.node_id)
+        prev_state = self._host_tracker.state
+        new_state = self._host_tracker.observe_ack(session.node_id)
+        if prev_state == PRE_HOST and new_state != PRE_HOST:
+            if self._election_protocol is not None:
+                await self._election_protocol.cancel_campaign()
         self._refresh_status(session)
+
+    # ------------------------------------------------------------------
+    # Election message handling (Phase 06)
+    # ------------------------------------------------------------------
+
+    async def _handle_election_message(self, session: PeerSession, message: dict[str, Any],
+                                       kind: str) -> None:
+        """Dispatch validated election messages to the election protocol."""
+        if self._election_protocol is None:
+            session.record_error("Election protocol is not configured.")
+            self._refresh_status(session)
+            return
+        if kind == "election-request":
+            await self._election_protocol.handle_vote_request(
+                session.node_id, message)
+        elif kind == "election-response":
+            await self._election_protocol.handle_vote_response(
+                session.node_id, message)
+        self._refresh_status(session)
+
+    # ------------------------------------------------------------------
+    # Lease renewal & command dispatch (Phase 07)
+    # ------------------------------------------------------------------
+
+    async def _handle_lease_renewal_message(
+        self, session: PeerSession, message: dict[str, Any], kind: str
+    ) -> None:
+        if self._election_protocol is None:
+            session.record_error("Election protocol is not configured.")
+            self._refresh_status(session)
+            return
+        if kind == "lease-renewal-request":
+            await self._election_protocol.handle_lease_renewal_request(
+                session.node_id, message
+            )
+        elif kind == "lease-renewal-response":
+            await self._election_protocol.handle_lease_renewal_response(
+                session.node_id, message
+            )
+        self._refresh_status(session)
+
+    async def _handle_agent_command_message(
+        self, session: PeerSession, message: dict[str, Any], kind: str
+    ) -> None:
+        if kind == "agent-command":
+            await self._handle_agent_command(session, message)
+        elif kind == "agent-command-reply":
+            await self._handle_agent_command_reply(session, message)
+        self._refresh_status(session)
+
+    async def _handle_agent_command(self, session: PeerSession, message: dict[str, Any]) -> None:
+        """Process an incoming authoritative Host command."""
+        command_id = message.get("commandId", "")
+        term = message.get("hostTerm")
+        host_node_id = message.get("hostNodeId")
+        target_node_id = message.get("targetNodeId")
+        command = message.get("command")
+
+        # 1. Message identity must match authenticated session identity
+        if message.get("nodeId") != session.node_id:
+            await self._send_command_reply(session, command_id, term, False, error="Session identity mismatch.")
+            return
+
+        # 2. Host Node ID in payload must match authenticated sender
+        if host_node_id != session.node_id:
+            await self._send_command_reply(session, command_id, term, False, error="Host identity does not match sender.")
+            return
+
+        # 3. Sender must be an authorized host peer (configured member)
+        if self._election_members and session.node_id not in (m.node_id for m in self._election_members):
+            await self._send_command_reply(session, command_id, term, False, error="Sender is not an election member.")
+            return
+
+        # 4. Host term must not be stale compared to local state
+        known_term = 0
+        if getattr(self, "_election_state_store", None) is not None:
+            try:
+                known_term = self._election_state_store.load().current_term
+            except SecurityStoreError:
+                await self._send_command_reply(session, command_id, term, False, error="Local state storage error.")
+                return
+
+        if not isinstance(term, int) or term < known_term:
+            await self._send_command_reply(session, command_id, term if isinstance(term, int) else 0,
+                                           False, error="Stale host term.")
+            return
+
+        # Observe term if newer
+        if getattr(self, "_election_state_store", None) is not None and term > known_term:
+            self._election_state_store.observe_term(term)
+
+        # 5. Fail closed if local host tracker is in conflict
+        if self._host_tracker.state == HOST_CONFLICT:
+            await self._send_command_reply(session, command_id, term, False, error="Host state is in conflict.")
+            return
+
+        # 6. Target check
+        if target_node_id not in (self.identity.node_id, "*"):
+            await self._send_command_reply(session, command_id, term, False, error="Command not targeted to this agent.")
+            return
+
+        # 6b. Receiver-side lease-expiry validation (Phase 07 stale-command fix).
+        #
+        # Acceptance rule:
+        #   receiver_wall_clock < leaseExpiresAt - MAX_CLOCK_SKEW_SECONDS
+        #
+        # Missing, non-numeric, boolean, or non-finite expiry values are rejected.
+        # Note: Structurally valid timestamps do not prove clock synchronization;
+        # the application does not actively verify clock offsets or NTP status.
+        # Stale-command rejection is guaranteed ONLY while the explicit assumption
+        # holds that the receiver's wall clock does not lag behind the Host's
+        # wall clock by more than MAX_CLOCK_SKEW_SECONDS (5.0 s), and neither
+        # clock is stepped backward. If receiver clock lag exceeds 5.0 s, this
+        # check fails open.
+        _lease_expires_at = message.get("leaseExpiresAt")
+        _is_valid_expiry = (
+            isinstance(_lease_expires_at, (int, float))
+            and not isinstance(_lease_expires_at, bool)
+            and _lease_expires_at == _lease_expires_at  # not NaN
+            and _lease_expires_at != float("inf")
+            and _lease_expires_at != float("-inf")
+        )
+        if not _is_valid_expiry:
+            await self._send_command_reply(
+                session, command_id, term, False,
+                error="Command is missing a valid lease expiry."
+            )
+            return
+        if self._wall_clock() >= _lease_expires_at - MAX_CLOCK_SKEW_SECONDS:
+            await self._send_command_reply(
+                session, command_id, term, False,
+                error="Command lease has expired."
+            )
+            return
+
+        # 7. Command authorization
+        if command == "status":
+            facts = self._agent_runtime.snapshot() if self._agent_runtime is not None else {}
+            await self._send_command_reply(session, command_id, term, True, result=facts)
+        elif command == "inventory":
+            if self._agent_runtime is not None:
+                inv = await self._agent_runtime.collect_inventory()
+                await self._send_command_reply(session, command_id, term, True, result=inv)
+            else:
+                await self._send_command_reply(session, command_id, term, True, result={})
+        else:
+            await self._send_command_reply(session, command_id, term, False, error=f"Unauthorized command: {command}")
+
+    async def _send_command_reply(
+        self,
+        session: PeerSession,
+        command_id: str,
+        term: int | None,
+        success: bool,
+        result: Any = None,
+        error: str | None = None,
+    ) -> None:
+        try:
+            payload = build_agent_command_reply_payload(
+                self.identity,
+                session.session_id,
+                command_id,
+                term if isinstance(term, int) else 0,
+                success,
+                result=result,
+                error=error,
+            )
+            await self._send_locked(session, payload)
+        except (OSError, PeerProtocolError) as exc:
+            warn("Failed to send command reply.", {"error": str(exc)})
+
+    async def _handle_agent_command_reply(self, session: PeerSession, message: dict[str, Any]) -> None:
+        command_id = message.get("commandId")
+        if command_id and command_id in self._pending_command_futures:
+            future = self._pending_command_futures.pop(command_id)
+            if not future.done():
+                future.set_result(message)
+
+    async def send_agent_command(
+        self,
+        target_node_id: str,
+        command: str,
+        args: dict[str, Any] | None = None,
+        timeout: float = 5.0,
+    ) -> dict[str, Any]:
+        """Issue an authoritative command to a connected Agent peer."""
+        if self._host_lifecycle is None or not self._host_lifecycle.is_authoritative():
+            raise PeerProtocolError("Cannot issue command: node does not hold valid Host authority.")
+
+        session = self._sessions.get(target_node_id)
+        if session is None or not session.active:
+            raise PeerProtocolError(f"No active session for target peer {target_node_id}.")
+
+        command_id = os.urandom(8).hex()
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending_command_futures[command_id] = future
+
+        # Reject if lease already invalid at send time (fail-closed).
+        _wall_expiry = self._host_lifecycle.wall_clock_lease_expires_at
+        if _wall_expiry <= 0 or self._wall_clock() >= _wall_expiry - MAX_CLOCK_SKEW_SECONDS:
+            raise PeerProtocolError(
+                "Cannot issue command: Host authority lease has already expired."
+            )
+        payload = build_agent_command_payload(
+            self.identity,
+            session.session_id,
+            self._host_lifecycle.term,
+            self.identity.node_id,
+            target_node_id,
+            command,
+            command_id,
+            args,
+            lease_expires_at=_wall_expiry,
+        )
+        try:
+            await self._send_locked(session, payload)
+            return await asyncio.wait_for(future, timeout=timeout)
+        except Exception:
+            self._pending_command_futures.pop(command_id, None)
+            raise
+
+    async def _broadcast_lease_renewal(self, term: int) -> int:
+        if self._election_protocol is None:
+            return 0
+        return await self._election_protocol.broadcast_lease_renewal(term)
+
+    async def _handle_election_won(self, term: int) -> None:
+        if self._host_lifecycle is not None:
+            now = self._clock()
+            self._host_lifecycle.record_initial_lease(term, now)
+            await self._host_lifecycle.activate()
+
+    async def _send_to_peer(self, node_id: str, payload: dict[str, Any]) -> None:
+        """Send a payload to a connected peer by node ID."""
+        session = self._sessions.get(node_id)
+        if session is None or not session.active:
+            return
+        await self._send_locked(session, payload)
+
+    def _get_session_id_for(self, node_id: str) -> str | None:
+        """Return the session ID for a connected peer, or None."""
+        session = self._sessions.get(node_id)
+        if session is None or not session.active:
+            return None
+        return session.session_id
+
+    @property
+    def election_protocol(self) -> ElectionProtocol | None:
+        """Expose the election protocol for external coordination."""
+        return self._election_protocol
+
+    def election_snapshot(self) -> ElectionSnapshot | None:
+        """Return the current election state, or None if unconfigured."""
+        if self._election_protocol is None:
+            return None
+        return self._election_protocol.snapshot()
+
+    def _trigger_election_if_eligible(self) -> None:
+        """Trigger an election campaign if protocol prerequisites are met."""
+        if self._election_protocol is not None and self._election_protocol.should_start_election():
+            self._spawn(self._election_protocol.start_campaign())
 
     def _validate_session_message(self, message: dict[str, Any], session: PeerSession,
                                   kind: str):
